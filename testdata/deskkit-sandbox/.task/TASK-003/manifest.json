@@ -1,0 +1,64 @@
+{
+  "task_id": "TASK-003",
+  "title": "CB1 word batch (window is C1)",
+  "owner": "C1",
+  "track": "feature",
+  "risk": "low",
+  "attempt": 0,
+  "status": "done",
+  "status_history": [
+    {
+      "status": "pending",
+      "at": "2026-09-06T16:18:00+00:00",
+      "by": "taskctl"
+    },
+    {
+      "status": "in_progress",
+      "at": "2026-09-06T16:20:02+00:00",
+      "by": "M1",
+      "reason": "transition pending -> in_progress"
+    },
+    {
+      "status": "worker_done",
+      "at": "2026-09-06T16:21:56+00:00",
+      "by": "worker",
+      "reason": "transition in_progress -> worker_done"
+    },
+    {
+      "status": "integrated",
+      "at": "2026-09-06T16:22:46+00:00",
+      "by": "M1",
+      "reason": "transition worker_done -> integrated"
+    },
+    {
+      "status": "done",
+      "at": "2026-09-06T16:22:46+00:00",
+      "by": "M1",
+      "reason": "transition integrated -> done"
+    }
+  ],
+  "allowed_paths": [
+    "data/words-batch/",
+    ".task/TASK-003/"
+  ],
+  "requirements": [
+    {
+      "id": "R1",
+      "text": "产出文件位于 data/words-batch/CB1.json",
+      "verify": "py -3 tests/test_cb1.py",
+      "verify_cmd": "py -3 tests/test_cb1.py"
+    },
+    {
+      "id": "R2",
+      "text": "words 为 8 到 12 条，每条有非空 en 与 zh",
+      "verify": "py -3 tests/test_cb1.py",
+      "verify_cmd": "py -3 tests/test_cb1.py"
+    },
+    {
+      "id": "R3",
+      "text": "JSON 的 window 字段是文件标记 CB1，owner_window 是窗号 C1",
+      "verify": "py -3 tests/test_cb1.py",
+      "verify_cmd": "py -3 tests/test_cb1.py"
+    }
+  ]
+}

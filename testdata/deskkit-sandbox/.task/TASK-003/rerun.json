@@ -1,0 +1,45 @@
+{
+  "task_id": "TASK-003",
+  "at": "2026-09-06T16:22:48+00:00",
+  "git": "ok",
+  "diff_files": [
+    ".task/TASK-001/manifest.json",
+    ".task/TASK-001/rerun.json",
+    ".task/TASK-002/manifest.json",
+    ".task/TASK-002/rerun.json",
+    ".task/round.json",
+    "docs/FIX-PLAN.md",
+    "docs/MODULE-REGISTRY.md",
+    "docs/RECEIPT-LOG.md",
+    "scripts/taskctl.py",
+    "src/counter.py",
+    "src/greet.py",
+    ".task/TASK-001/evidence/r1-nonempty.txt",
+    ".task/TASK-001/evidence/r2-blank.txt",
+    ".task/TASK-001/worker-report.json",
+    ".task/TASK-002/evidence/r1-nonneg.txt",
+    ".task/TASK-002/evidence/r2-negative.txt",
+    ".task/TASK-002/evidence/r3-type.txt",
+    ".task/TASK-002/verify-report.json",
+    ".task/TASK-002/worker-report.json",
+    ".task/TASK-003/evidence/r1-path.txt",
+    ".task/TASK-003/evidence/r2-words.txt",
+    ".task/TASK-003/evidence/r3-window.txt",
+    ".task/TASK-003/manifest.json",
+    ".task/TASK-003/rerun.json",
+    ".task/TASK-003/worker-report.json",
+    "TEST-RECORD.md",
+    "data/CONTENT-SPEC.md",
+    "data/words-batch/CB1.json",
+    "tests/test_cb1.py"
+  ],
+  "commands": [
+    {
+      "command": "py -3 tests/test_cb1.py",
+      "exit_code": 0,
+      "stdout_tail": "RESULT PASS\n",
+      "stderr_tail": ""
+    }
+  ],
+  "evidence_ok": true
+}

@@ -1,0 +1,76 @@
+{
+  "task_id": "TASK-002",
+  "title": "bump counter helper",
+  "owner": "M3",
+  "track": "feature",
+  "risk": "medium",
+  "attempt": 0,
+  "status": "done",
+  "status_history": [
+    {
+      "status": "pending",
+      "at": "2026-09-06T14:14:51+00:00",
+      "by": "taskctl"
+    },
+    {
+      "status": "in_progress",
+      "at": "2026-09-06T14:39:14+00:00",
+      "by": "M1",
+      "reason": "M3 overwrote manifest and wiped in_progress; M1 restores so worker_done is possible"
+    },
+    {
+      "status": "worker_done",
+      "at": "2026-09-06T14:52:21+00:00",
+      "by": "worker",
+      "reason": "transition in_progress -> worker_done"
+    },
+    {
+      "status": "verifying",
+      "at": "2026-09-06T15:24:55+00:00",
+      "by": "verifier",
+      "reason": "transition worker_done -> verifying"
+    },
+    {
+      "status": "verified",
+      "at": "2026-09-06T16:16:00+00:00",
+      "by": "verifier",
+      "reason": "transition verifying -> verified"
+    },
+    {
+      "status": "integrated",
+      "at": "2026-09-06T16:16:50+00:00",
+      "by": "M1",
+      "reason": "transition verified -> integrated"
+    },
+    {
+      "status": "done",
+      "at": "2026-09-06T16:16:51+00:00",
+      "by": "M1",
+      "reason": "transition integrated -> done"
+    }
+  ],
+  "allowed_paths": [
+    "src/counter.py",
+    ".task/TASK-002/"
+  ],
+  "requirements": [
+    {
+      "id": "R1",
+      "text": "bump(n) 对 n 为 int 且 n >= 0 返回 n + 1",
+      "verify": "py -3 tests/test_counter.py",
+      "verify_cmd": "py -3 tests/test_counter.py"
+    },
+    {
+      "id": "R2",
+      "text": "bump(n) 对 n < 0 抛出 ValueError",
+      "verify": "py -3 tests/test_counter.py",
+      "verify_cmd": "py -3 tests/test_counter.py"
+    },
+    {
+      "id": "R3",
+      "text": "bump(True) 与 bump(1.5) 抛出 TypeError",
+      "verify": "py -3 tests/test_counter.py",
+      "verify_cmd": "py -3 tests/test_counter.py"
+    }
+  ]
+}

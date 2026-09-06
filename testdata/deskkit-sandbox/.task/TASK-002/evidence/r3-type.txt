@@ -1,0 +1,3 @@
+R3: bump(True) and bump(1.5) raise TypeError.
+bool is a subclass of int in Python, so True must not be treated as 1.
+Implemented in src/counter.py with type(n) is int (rejects bool and float).

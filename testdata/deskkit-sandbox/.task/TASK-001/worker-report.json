@@ -1,0 +1,32 @@
+{
+  "task_id": "TASK-001",
+  "window": "M2",
+  "status": "worker_done",
+  "covered_requirements": ["R1", "R2"],
+  "evidence": [
+    {
+      "requirement_id": "R1",
+      "path": ".task/TASK-001/evidence/r1-nonempty.txt",
+      "note": "greet(Ada)/greet(M2) return Hello, {name}!"
+    },
+    {
+      "requirement_id": "R2",
+      "path": ".task/TASK-001/evidence/r2-blank.txt",
+      "note": "empty and whitespace-only names raise ValueError"
+    }
+  ],
+  "changed_files": [
+    "src/greet.py",
+    ".task/TASK-001/manifest.json",
+    ".task/TASK-001/worker-report.json",
+    ".task/TASK-001/evidence/r1-nonempty.txt",
+    ".task/TASK-001/evidence/r2-blank.txt"
+  ],
+  "tests": [
+    {
+      "command": "py -3 tests/test_greet.py",
+      "exit_code": 0
+    }
+  ],
+  "known_gaps": []
+}

@@ -1,0 +1,37 @@
+{
+  "task_id": "TASK-002",
+  "window": "M3",
+  "status": "worker_done",
+  "covered_requirements": ["R1", "R2", "R3"],
+  "evidence": [
+    {
+      "requirement_id": "R1",
+      "path": ".task/TASK-002/evidence/r1-nonneg.txt",
+      "note": "bump(0)==1 and bump(41)==42 for non-negative int"
+    },
+    {
+      "requirement_id": "R2",
+      "path": ".task/TASK-002/evidence/r2-negative.txt",
+      "note": "bump(-1) raises ValueError"
+    },
+    {
+      "requirement_id": "R3",
+      "path": ".task/TASK-002/evidence/r3-type.txt",
+      "note": "bump(True) and bump(1.5) raise TypeError"
+    }
+  ],
+  "changed_files": [
+    "src/counter.py",
+    ".task/TASK-002/worker-report.json",
+    ".task/TASK-002/evidence/r1-nonneg.txt",
+    ".task/TASK-002/evidence/r2-negative.txt",
+    ".task/TASK-002/evidence/r3-type.txt"
+  ],
+  "tests": [
+    {
+      "command": "py -3 tests/test_counter.py",
+      "exit_code": 0
+    }
+  ],
+  "known_gaps": []
+}

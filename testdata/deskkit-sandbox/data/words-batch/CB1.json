@@ -1,0 +1,16 @@
+{
+  "window": "CB1",
+  "owner_window": "C1",
+  "words": [
+    {"en": "apple", "zh": "苹果"},
+    {"en": "bread", "zh": "面包"},
+    {"en": "chair", "zh": "椅子"},
+    {"en": "door", "zh": "门"},
+    {"en": "earth", "zh": "地球"},
+    {"en": "forest", "zh": "森林"},
+    {"en": "garden", "zh": "花园"},
+    {"en": "house", "zh": "房子"},
+    {"en": "island", "zh": "岛屿"},
+    {"en": "jacket", "zh": "夹克"}
+  ]
+}

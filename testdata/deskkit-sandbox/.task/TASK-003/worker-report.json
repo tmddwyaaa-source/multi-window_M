@@ -1,0 +1,37 @@
+{
+  "task_id": "TASK-003",
+  "window": "C1",
+  "status": "worker_done",
+  "covered_requirements": ["R1", "R2", "R3"],
+  "evidence": [
+    {
+      "requirement_id": "R1",
+      "path": ".task/TASK-003/evidence/r1-path.txt",
+      "note": "data/words-batch/CB1.json exists"
+    },
+    {
+      "requirement_id": "R2",
+      "path": ".task/TASK-003/evidence/r2-words.txt",
+      "note": "10 words, each with non-empty en and zh"
+    },
+    {
+      "requirement_id": "R3",
+      "path": ".task/TASK-003/evidence/r3-window.txt",
+      "note": "window=CB1 file token; owner_window=C1 real window id"
+    }
+  ],
+  "changed_files": [
+    "data/words-batch/CB1.json",
+    ".task/TASK-003/worker-report.json",
+    ".task/TASK-003/evidence/r1-path.txt",
+    ".task/TASK-003/evidence/r2-words.txt",
+    ".task/TASK-003/evidence/r3-window.txt"
+  ],
+  "tests": [
+    {
+      "command": "py -3 tests/test_cb1.py",
+      "exit_code": 0
+    }
+  ],
+  "known_gaps": []
+}

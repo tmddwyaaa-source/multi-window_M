@@ -1,0 +1,2 @@
+R1: output file is data/words-batch/CB1.json
+The batch file exists at the path required by tests/test_cb1.py and CONTENT-SPEC.md.

@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
+.task/hook-runs.jsonl
+testdata/**/.task/hook-runs.jsonl
+*.egg-info/
+.DS_Store
+Thumbs.db

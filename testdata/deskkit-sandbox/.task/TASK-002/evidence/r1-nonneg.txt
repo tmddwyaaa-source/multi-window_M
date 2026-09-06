@@ -1,0 +1,5 @@
+R1: bump(n) returns n + 1 when n is a plain int and n >= 0.
+Examples expected by tests/test_counter.py:
+- bump(0) == 1
+- bump(41) == 42
+Implemented in src/counter.py with type(n) is int, then n >= 0.

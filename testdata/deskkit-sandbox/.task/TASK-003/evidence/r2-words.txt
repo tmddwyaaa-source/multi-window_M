@@ -1,0 +1,2 @@
+R2: words is a list of 8 to 12 items; each item has non-empty en and zh.
+CB1.json contains 10 entries (apple..jacket), all with stripped non-empty strings.

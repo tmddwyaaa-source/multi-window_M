@@ -1,0 +1,8 @@
+{
+  "task_id": "TASK-002",
+  "reviewer": "C1",
+  "result": "pass",
+  "checked_requirements": ["R1", "R2", "R3"],
+  "missing": [],
+  "notes": "Independent review of TASK-002. reviewer=C1 differs from worker-report.window=M3. Manifest risk=medium, status=worker_done, allowed_paths=src/counter.py and .task/TASK-002/. worker-report covers R1/R2/R3 with existing evidence files r1-nonneg.txt, r2-negative.txt, r3-type.txt. src/counter.py uses type(n) is int then n>=0. Re-ran py -3 tests/test_counter.py -> RESULT PASS. R1: bump(0)==1 and bump(41)==42. R2: bump(-1) raises ValueError. R3: bump(True) and bump(1.5) raise TypeError. No implementation edits by C1."
+}

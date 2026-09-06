@@ -1,0 +1,4 @@
+R2: bump(n) raises ValueError when n < 0.
+Example expected by tests/test_counter.py:
+- bump(-1) raises ValueError
+Implemented in src/counter.py after the int-type check.

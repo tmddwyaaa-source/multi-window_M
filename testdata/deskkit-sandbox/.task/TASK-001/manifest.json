@@ -1,0 +1,58 @@
+{
+  "task_id": "TASK-001",
+  "title": "greet greeting helper",
+  "owner": "M2",
+  "track": "feature",
+  "risk": "low",
+  "attempt": 0,
+  "status": "done",
+  "status_history": [
+    {
+      "status": "pending",
+      "at": "2026-09-06T14:14:51+00:00",
+      "by": "taskctl"
+    },
+    {
+      "status": "in_progress",
+      "at": "2026-09-06T14:15:45+00:00",
+      "by": "M1",
+      "reason": "transition pending -> in_progress"
+    },
+    {
+      "status": "worker_done",
+      "at": "2026-09-06T14:34:33+00:00",
+      "by": "worker",
+      "reason": "transition in_progress -> worker_done"
+    },
+    {
+      "status": "integrated",
+      "at": "2026-09-06T14:53:27+00:00",
+      "by": "M1",
+      "reason": "transition worker_done -> integrated"
+    },
+    {
+      "status": "done",
+      "at": "2026-09-06T14:53:27+00:00",
+      "by": "M1",
+      "reason": "transition integrated -> done"
+    }
+  ],
+  "allowed_paths": [
+    "src/greet.py",
+    ".task/TASK-001/"
+  ],
+  "requirements": [
+    {
+      "id": "R1",
+      "text": "greet(name) 对非空名字返回 Hello, {name}!",
+      "verify": "py -3 tests/test_greet.py",
+      "verify_cmd": "py -3 tests/test_greet.py"
+    },
+    {
+      "id": "R2",
+      "text": "greet('') 与 greet('  ') 抛出 ValueError",
+      "verify": "py -3 tests/test_greet.py",
+      "verify_cmd": "py -3 tests/test_greet.py"
+    }
+  ]
+}

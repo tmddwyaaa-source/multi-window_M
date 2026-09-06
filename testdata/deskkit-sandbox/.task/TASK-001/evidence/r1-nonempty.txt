@@ -1,0 +1,5 @@
+R1: greet(name) returns Hello, {name}! for a non-empty name.
+Examples expected by tests/test_greet.py:
+- greet("Ada") == "Hello, Ada!"
+- greet("M2") == "Hello, M2!"
+Implemented in src/greet.py.
