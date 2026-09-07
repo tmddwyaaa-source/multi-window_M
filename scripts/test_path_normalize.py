@@ -7,7 +7,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-TASKCTL = Path(r"C:\Users\user\.cursor\skills\multi-window_M-0.25\scripts\taskctl.py")
+TASKCTL = Path(__file__).resolve().parent / "taskctl.py"
 
 
 def load_taskctl():

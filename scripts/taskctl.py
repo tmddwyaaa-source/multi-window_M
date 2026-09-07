@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Minimal, dependency-free task gate for multi-window_M v0.25.
+"""Minimal, dependency-free task gate for multi-window_M v0.26.
 
-v0.25 parallel collaboration and 加分 wording live in SKILL.md. G2 ignores
-role-owned .task files: manifest.json, rerun.json, and verify-report.json.
-Worker src/tests/worker-report/evidence must still be declared.
+Core behavior is host-agnostic. verification_policy() is the only close-path
+table (gate / audit-round / transition). G2 ignores role-owned .task files:
+manifest.json, rerun.json, and verify-report.json.
 """
 
 from __future__ import annotations
@@ -56,6 +56,7 @@ KNOWN_COMMANDS = {
     "status",
     "transition",
     "reopen",
+    "selftest",
 }
 ROOT_PLACEMENT_ERROR = (
     "FAIL: --root must come before the subcommand\n"
@@ -500,19 +501,30 @@ def validate_evidence_rerun(root: Path, task_id: str, manifest: Dict[str, Any]) 
 
 
 def verification_policy(manifest: Dict[str, Any]) -> Dict[str, Any]:
-    """Single policy table for Gate, transition, and M1 close.
+    """Single policy table for Gate, audit-round, transition, and M1 close.
 
-    independent_verification | close path
+    independent_verification | unique close path
     false (low AND attempt < 2 AND flag unset) | worker_done -> integrated -> done
     true  (medium/high OR attempt >= 2 OR flag) | worker_done -> verifying -> verified -> integrated -> done
     """
     risk = str(manifest.get("risk", "medium")).lower()
     attempt = int(manifest.get("attempt", 0) or 0)
     flagged = bool(manifest.get("verification_required"))
+    conflict = ""
+    if risk not in {"low", "medium", "high"}:
+        conflict = (
+            "POLICY_CONFLICT: risk must be low|medium|high; "
+            "cannot choose a unique close path"
+        )
     independent = flagged or risk in {"medium", "high"} or attempt >= 2
     short_close = not independent
-    conflict = ""
-    if independent == short_close:
+    explicit = manifest.get("independent_verification")
+    if conflict == "" and explicit is not None and bool(explicit) != independent:
+        conflict = (
+            "POLICY_CONFLICT: independent_verification disagrees with "
+            "risk/attempt/verification_required"
+        )
+    if conflict == "" and independent == short_close:
         conflict = (
             "POLICY_CONFLICT: independent_verification and "
             "worker_done->integrated must be opposites"
@@ -525,6 +537,11 @@ def verification_policy(manifest: Dict[str, Any]) -> Dict[str, Any]:
         "allow_worker_done_to_integrated": short_close,
         "conflict": conflict,
     }
+
+
+def emit_policy_conflict(errors: List[str]) -> None:
+    if any("POLICY_CONFLICT" in str(error) for error in errors):
+        print("POLICY_CONFLICT")
 
 
 def verification_required(manifest: Dict[str, Any]) -> bool:
@@ -715,6 +732,7 @@ def cmd_gate(args: argparse.Namespace, root: Path) -> int:
     phase = "basic" if args.basic else "full"
     errors = gate(root, args.task_id, phase)
     if errors:
+        emit_policy_conflict(errors)
         print("RESULT FAIL")
         for error in errors:
             print(f"- {error}")
@@ -794,6 +812,7 @@ def cmd_audit_round(root: Path) -> int:
     for task_id in task_ids:
         all_errors.extend(gate(root, task_id, "basic"))
     if all_errors:
+        emit_policy_conflict(all_errors)
         print("ROUND_GATE_FAIL")
         for error in all_errors:
             print(f"- {error}")
@@ -803,6 +822,7 @@ def cmd_audit_round(root: Path) -> int:
     for task_id in task_ids:
         full_errors.extend(gate(root, task_id, "full"))
     if full_errors:
+        emit_policy_conflict(full_errors)
         if any(
             "verify-report" in error or "verifier" in error or "reviewer" in error
             for error in full_errors
@@ -914,14 +934,14 @@ def cmd_migrate_project(args: argparse.Namespace, root: Path) -> int:
     destination = safe_destination(root, args.destination)
     source = Path(__file__).resolve()
     if destination == source:
-        print("FAIL: destination is the currently running v0.21 script")
+        print("FAIL: destination is the currently running v0.26 script")
         return 1
     if destination.exists() and not args.force:
         print(f"FAIL: destination exists; add --force to replace: {destination.relative_to(root)}")
         return 1
     destination.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(source, destination)
-    print(f"MIGRATED {destination.relative_to(root)} from multi-window_M-0.25")
+    print(f"MIGRATED {destination.relative_to(root)} from multi-window_M v0.26")
     return 0
 
 
@@ -1096,6 +1116,34 @@ def cmd_reopen(args: argparse.Namespace, root: Path) -> int:
     return 0
 
 
+def cmd_selftest() -> int:
+    """Run test_*.py beside this file so every host copy stays self-contained."""
+    here = Path(__file__).resolve().parent
+    tests = sorted(
+        path for path in here.glob("test_*.py") if path.is_file()
+    )
+    if not tests:
+        print("SELFTEST FAIL: no test_*.py next to taskctl.py")
+        return 1
+    failed = 0
+    for test in tests:
+        print(f"SELFTEST RUN {test.name}")
+        completed = subprocess.run(
+            [sys.executable, str(test)],
+            cwd=str(here),
+        )
+        if completed.returncode != 0:
+            failed += 1
+            print(f"SELFTEST FAIL {test.name}")
+        else:
+            print(f"SELFTEST PASS {test.name}")
+    if failed:
+        print(f"SELFTEST FAIL count={failed}")
+        return 1
+    print("SELFTEST PASS")
+    return 0
+
+
 def root_after_subcommand(tokens: List[str]) -> bool:
     sub_index = next(
         (index for index, token in enumerate(tokens) if token in KNOWN_COMMANDS),
@@ -1111,7 +1159,7 @@ def root_after_subcommand(tokens: List[str]) -> bool:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="multi-window_M v0.25 task gate",
+        description="multi-window_M v0.26 task gate",
         epilog="Place --root before the subcommand: taskctl.py --root <dir> status",
     )
     parser.add_argument(
@@ -1152,7 +1200,7 @@ def build_parser() -> argparse.ArgumentParser:
     hook = sub.add_parser("hook-audit", help="record a Stop-hook run and audit the current round")
     hook.add_argument("--source", choices=["manual", "codex-stop", "cursor-stop", "zcode-stop"], default="manual")
     hook.add_argument("--host", choices=["cursor", "codex", "zcode", "manual"])
-    migrate = sub.add_parser("migrate-project", help="copy this v0.25 taskctl into the project")
+    migrate = sub.add_parser("migrate-project", help="copy this v0.26 taskctl into the project")
     migrate.add_argument("--destination", default="scripts/taskctl.py")
     migrate.add_argument("--force", action="store_true", help="replace an existing destination")
     sub.add_parser("status", help="show window and task states")
@@ -1167,6 +1215,7 @@ def build_parser() -> argparse.ArgumentParser:
     reopen.add_argument("task_id")
     reopen.add_argument("--reason", required=True)
     reopen.add_argument("--actor", choices=["M1"], default="M1")
+    sub.add_parser("selftest", help="run bundled tests next to this script")
     return parser
 
 
@@ -1201,6 +1250,8 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
             return cmd_transition(args, root)
         if args.command == "reopen":
             return cmd_reopen(args, root)
+        if args.command == "selftest":
+            return cmd_selftest()
     except ValueError as exc:
         print(f"FAIL: {exc}")
         return 1

@@ -103,7 +103,7 @@
 ### 斥候
 
 ```text
-/multi-window_M
+/multi-window_M-0.26
 我是 {窗号}。当前角色：斥候（只调查，禁止改任何文件）。
 请读 {项目路径}/docs/MODULE-REGISTRY.md 中【{窗号}】章节。
 主题：{一句话}
@@ -122,7 +122,7 @@
 ### 主力
 
 ```text
-/multi-window_M
+/multi-window_M-0.26
 我是 {窗号}。当前角色：主力（只实现，最小改动）。
 请读 Registry 中【{窗号}】章节。依据斥候报告（若有则以下为准）：
 ---
@@ -143,7 +143,7 @@
 ### 搜剿 — 子窗口自检
 
 ```text
-/multi-window_M
+/multi-window_M-0.26
 我是 {窗号}。当前角色：搜剿（禁止修改实现代码）。
 卡点签名：{现象 + 位置/测试}
 本轮循环计数：{k}/4
@@ -163,7 +163,7 @@
 ### M1 最终查收
 
 ```text
-/multi-window_M
+/multi-window_M-0.26
 我是 M1。当前角色：搜剿（只验收，禁止顺手改子模块来“修完”）。
 用户汇报：{窗号} 已完成，请查收。（或：所有窗口已完成 = 只核本轮派工名单）
 
@@ -280,7 +280,7 @@ D:\gongju\{工具名}-{版本号}/
 
 **作战条令**：常驻 M1～M10；临时 C 一轮最多 4。禁止 M11+、禁止 CB 当窗号。查收以本窗重跑为准；工人不会自动交 M1。未确认额外能力不要说加分。网页预览仅 M1。可用宿主已有子代理加速，不新增角色窗。
 
-## v0.22 任务控制层模板
+## 任务控制层模板
 
 ### 任务目录
 
@@ -359,7 +359,7 @@ D:\gongju\{工具名}-{版本号}/
 }
 ```
 
-v0.23 规则：`reviewer` 必须是独立窗口，不能等于 `worker-report.window`；`changed_files` 必须全部落在 `manifest.json` 的 `allowed_paths` 内；`evidence[].path` 必须真实存在。Full Gate 会重跑 `verify_cmd` / 可执行的 `verify` / `tests[].command`，并写 `rerun.json`。**`manifest.json`、`rerun.json`、`verify-report.json` 未列入工人 `changed_files` 不算漏报。** 任务状态写在 manifest，窗口状态写在 round.json，不要混写。状态变更必须通过 `taskctl.py transition`，直接编辑 `status` 或整份覆盖 manifest 不算有效收口。
+当前规则：`reviewer` 必须是独立窗口，不能等于 `worker-report.window`；`changed_files` 必须全部落在 `manifest.json` 的 `allowed_paths` 内；`evidence[].path` 必须真实存在。Full Gate 会重跑 `verify_cmd` / 可执行的 `verify` / `tests[].command`，并写 `rerun.json`。**`manifest.json`、`rerun.json`、`verify-report.json` 未列入工人 `changed_files` 不算漏报。** 任务状态写在 manifest，窗口状态写在 round.json，不要混写。状态变更必须通过 `taskctl.py transition`，直接编辑 `status` 或整份覆盖 manifest 不算有效收口。策略冲突输出 `POLICY_CONFLICT`。细节见 `references/task-gate.md`。
 
 ### 本轮状态 round.json
 
@@ -374,9 +374,9 @@ v0.23 规则：`reviewer` 必须是独立窗口，不能等于 `worker-report.wi
 }
 ```
 
-用户发送「M4 已完成，请查收」后，M1 记录 receipt；所有本轮窗口都收到后，将 `check_requested` 设为 `true`，再运行 `taskctl.py audit-round`。v0.22 还会检查 `window_status` 是否存在、覆盖全部窗口，并与 receipts 一致。
+用户发送「M4 已完成，请查收」后，M1 记录 receipt；所有本轮窗口都收到后，将 `check_requested` 设为 `true`，再运行 `taskctl.py audit-round`。脚本会检查 `window_status` 是否存在、覆盖全部窗口，并与 receipts 一致。
 
-### v0.22 开工补充话术
+### 开工补充话术
 
 ```text
 本任务除原有 Registry 规则外，使用 .task/TASK-xxx/manifest.json 的 R 编号。

@@ -1,154 +1,33 @@
 ---
-name: multi-window_M
+name: multi-window_M-0.26
 description: >-
   多窗口分工：常驻仅 M1～M10；短期任务用临时窗 C1、C2（一轮最多 4 个）。
-  禁止 M11+、禁止 CB1 当窗名。json 文件名 CB2 只给脚本认。
+  禁止 M11+、禁止 CB1 当窗号。json 文件名 CB2 只给脚本认。
   默认不说加分；仅本窗已确认额外能力时才点名加分。
   可用宿主已有子代理减少传话，不新增角色窗；M1 唯一收口。
   查收以本窗重跑为准；证据可重跑；Hook 记 run_id/宿主/起止。
+  规则只描述当前行为；门禁细节见 references/task-gate.md。
   斥候→主力→搜剿；卡点最多 4 次。
   在用户提到多窗口、M1、C1、查收、模块注册表、斥候/主力/搜剿时使用。
-version: "0.25"
+version: "0.26"
 disable-model-invocation: true
 ---
 
-# Multi-Window_M（常驻 M1～M10，临时 Cn）
+# Multi-Window_M-0.26（常驻 M1～M10，临时 Cn）
 
-当前版本写在本文件开头的 `version` 字段（现为 0.25），不要写进文件夹名。调用：`/multi-window_M`。
+本文件夹名带版本号，是升级系列的隔离副本；`version` 字段也是 0.26。调用：`/multi-window_M-0.26`。历史版本说明见 [CHANGELOG.md](CHANGELOG.md)，不得当作当前规则。
 
-复制即用话术、Registry / 报告模板见 [templates.md](templates.md)。需要贴话术时先读该文件。窗口规则、策略表、证据重跑、Hook 记账沿用既有门禁。本版增加可选并行加速，并修正加分判定与出句。G2 对账忽略 `manifest.json` / `rerun.json` / `verify-report.json`。
+复制即用话术见 [templates.md](templates.md)。G0～G3、manifest schema、`transition` 表见 [references/task-gate.md](references/task-gate.md)。宿主 Hook 接线只允许写在 [references/hooks.md](references/hooks.md)。
 
-## v0.25 并行协作
+## 本版唯一问题与成功标准
 
-目标：在门禁已经稳定之后，减少用户传话，不改文件边界、独立验收和 M1 收口。
+**问题：** 说明书按 0.22～0.25 分层堆叠，Agent 可能引用过期块；策略表虽已进脚本，但缺少「冲突必拒绝」的专项覆盖。
 
-- 只用**当前宿主已经提供**的多代理 / 子代理。宿主没有就不要强用，不要发明新窗口角色或新编号（不新增 F、Scout 窗、M11+）。
-- 默认流程仍是用户开 M/C 窗并传查收。并行是加速，不是新工作流。
-- 子代理不是窗号。它干的活必须落在 Registry 里已有的 M/C 任务和 `allowed_paths` 上。
-- 同一文件仍只让一个任务主改。不能用同一个子代理既当工人又当独立验收。
-- 子代理回传说完成，只当查收**信号/线索**。M1 仍须本窗重跑验收命令，仍须 `transition` 收口。
-- 未确认本窗有额外能力时，不要少开窗、少等用户传话，也不要说加分。
+**成功标准：**
 
-成功标准：并行只提高效率；G0～G3、短路径 / 独立验收策略表、窗号规则与 0.24 相同。
-
-## v0.24 Hook 可观测性
-
-`hook-audit` 每次在有 `.task/` 的项目里写两行：`phase=start` 与 `phase=end`，共用一个 `run_id`。字段包括 `host`、`source`、`event`、`project_root`、`round_id`、`exit_code`、`audit_result`。
-
-- 日志文件：`.task/hook-runs.jsonl`，**只保留最新 100 行**。应加入 `.gitignore`，不要提交进 Git。
-- 失败只记账，**不** `transition`、不改 manifest、不标 done。
-- Cursor 用户级适配器调用本版 `taskctl.py`，并传 `--host cursor`。仍不要设 `failClosed`。
-- 无 `.task/` 静默跳过。dsh 不接入。
-
-从日志应能回答：何时、哪个宿主、哪个项目、哪一轮、这次检查结果是 ok 还是 fail。
-
-## v0.23 证据重跑
-
-Full Gate 与 `transition` 到 `verified` / `integrated` / `done` 时，脚本会：
-
-1. 执行可识别的验收命令（`requirements[].verify_cmd`，或 `verify` 以 `py ` / `python ` / `pytest` 等开头，或 `worker-report.tests[].command`）。超时 60 秒或退出码非 0 → FAIL。自然语言的 `verify` 不执行。
-2. `worker-report.evidence[].path`（或 `file`）必须存在于项目内。缺路径或文件不存在 → FAIL。
-3. 有 `.git` 时读取工作区 diff / 未跟踪文件；落在本任务 `allowed_paths` 内但未写入 `changed_files` → FAIL。**例外：** `.task/TASK-xxx/manifest.json`、`rerun.json`、`verify-report.json` 不必列入工人 `changed_files`（脚本改状态、门禁写 rerun、验收人写报告，都不算工人漏报）。`src/`、`tests/`、`worker-report.json`、evidence 仍必须申报。无 Git 则 `rerun.json` 里 `git=skipped`，命令与 evidence 仍要过。路径只去掉 `./` 前缀，**保留** `.task/` 这类点目录名；申报与 Git 用同一套归一化后再比较。
-4. 把时间、命令、退出码、diff 文件名写入 `.task/TASK-xxx/rerun.json`。口头 PASS 无效。
-
-`--basic` 门禁不重跑。Hook 仍不标 done，也不因重跑失败去改状态。
-
-## v0.22 任务门禁扩展
-
-本节是在原有多窗口规则之上增加的任务控制层；没有 `.task/` 的项目仍按原流程工作。
-
-### 任务清单与 R 编号
-
-M1 继续接收用户的自然语言需求，但派工前必须为每个任务建立 `.task/TASK-xxx/manifest.json`，把需求拆成 `R1`、`R2`、`R3` 等验收项。R 编号属于任务，不属于窗口，也不要求为每个 R 单独创建文件。
-
-建议的最小字段：`task_id`、`owner`、`track`、`risk`、`allowed_paths`、`requirements`、`attempt`。每个 requirement 至少包含 `id`、`text`、`verify`。可跑的验收命令写在 `verify_cmd`，或把 `verify` 写成可直接执行的命令。
-
-### 状态与门禁
-
-当项目启用 `.task/` 时，Gate、`transition`、M1 收口共用同一张策略表（`verification_policy()`）。禁止各自解释。规则冲突时脚本输出 `POLICY_CONFLICT` 并停止。
-
-| 条件 | 独立验收 | 收口路径 |
-|------|----------|----------|
-| **low** 且 `attempt < 2` 且未设 `verification_required` | 否 | `worker_done` → `integrated`（`--actor M1`）→ `done` |
-| **medium/high**，或 `attempt >= 2`，或 `verification_required` | 是 | `worker_done` → `verifying` → `verified` → `integrated` → `done` |
-
-工人只能交 `worker_done`。需要独立验收时，仅 verifier 可交 `verifying` / `verified`。只有 M1 能 `integrated` / `done`。状态必须通过 `taskctl.py transition` 迁移，直接编辑 manifest 的状态不算有效收口。`verified`、`integrated`、`done` 迁移前脚本会重新运行 Full Gate；`done` 还必须从 `integrated` 进入。人工可将任务改为 `paused`、`blocked` 或 `reopened`，但不能无证据直接伪造 `verified` / `done`。
-
-任务状态写在 `manifest.json`，窗口状态写在 `round.json` 的 `window_status`；不要把 `M2 verified` 当作任务完成。应写成 `TASK-001: verified`、`M2: worker_done`，避免把窗口和任务混为一谈。`taskctl status` 会在窗口行旁标注对应任务终态（全部 `done` 时带 `note=tasks_closed`），**不改写** `window_status`。
-
-门禁分层推进：
-
-- G0：任务目录、manifest、工人报告、独立验收报告是否存在。
-- G1：R 编号是否完整覆盖，是否有对应证据。
-- G2：测试退出码和 diff 越界检查；只允许改 `allowed_paths`。**v0.23 会真跑命令、核 evidence 路径、有 Git 时核工作区。** `manifest.json` / `rerun.json` / `verify-report.json` 未列入工人 `changed_files` 不算漏报。G3 仍要求独立验收报告存在且 reviewer ≠ 工人窗。
-- G3：中高风险任务或连续失败任务必须有独立验收报告，且 `reviewer` 不得等于实现窗口。
-
-v0.23 使用 `scripts/taskctl.py`，不依赖第三方 Python 包。常用命令：
-
-```text
-py -3 scripts/taskctl.py init TASK-001
-py -3 scripts/taskctl.py gate TASK-001
-py -3 scripts/taskctl.py audit-round
-py -3 scripts/taskctl.py reopen TASK-001 --reason "人工验收发现遗漏"
-py -3 scripts/taskctl.py status
-py -3 scripts/taskctl.py migrate-project --destination scripts/taskctl.py --force
-py -3 scripts/taskctl.py transition TASK-001 in_progress --actor M1
-py -3 scripts/taskctl.py transition TASK-001 worker_done --actor worker
-py -3 scripts/taskctl.py transition TASK-001 integrated --actor M1
-py -3 scripts/taskctl.py transition TASK-001 done --actor M1
-py -3 scripts/taskctl.py transition TASK-001 verifying --actor verifier
-py -3 scripts/taskctl.py transition TASK-001 verified --actor verifier
-```
-
-前四行是 **low 且 attempt < 2** 的短路径（M1 查收时本窗重跑 Full Gate 后再 `integrated`）。后两行仅在策略表要求独立验收时使用；medium/high 或 `attempt >= 2` **禁止** `worker_done → integrated`。
-
-脚本负责输出 `RESULT PASS` / `RESULT FAIL`；agent 不得只凭口头或自行打印 PASS。Hook 使用 `hook-audit`，会把每次 Stop 触发写入 `.task/hook-runs.jsonl`，从而区分“手动运行成功”和“Hook 实际触发”。
-
-旧项目升级时，M1 必须先用已安装的本技能脚本执行 `migrate-project --destination scripts/taskctl.py --force`，再运行门禁。若项目没有 Git 且命令从子目录启动，**把 `--root` 放在子命令前面**：
-
-```text
-py -3 <本技能目录>\scripts\taskctl.py --root <项目根> migrate-project --destination scripts/taskctl.py --force
-py -3 scripts/taskctl.py --root <项目根> status
-```
-
-`--root` 写在子命令后面会被拒绝。脚本不会再盲目继承父目录的 `.task/`。
-
-### 任务难度与失败升级
-
-所有任务都必须通过最低门禁。规模小不等于免检。是否独立验收只看上面的策略表：默认低风险且 `attempt < 2` 走 G0/G1/G2，由 M1 短路径收口；中高风险、人工重开或 `attempt >= 2` 必须走 G3。同一卡点第 4 次仍失败时写入 `docs/BLOCKERS/` 并停止盲改。
-
-### Hook 边界
-
-Hook 只是触发器，不是验收结论。一轮停止时调用 `hook-audit`（`--source` 按宿主：`codex-stop` / `cursor-stop` / `zcode-stop`，可选 `--host`）。没有 `.task/` 时静默退出。不自动创建 agent、不替 M1 标记 done。含 `.task/` 的项目触发后检查 `.task/hook-runs.jsonl`（start/end 成对，最多 100 行）。
-
-Cursor：用户级 `~/.cursor/hooks.json` 的 `stop` 事件调用 `~/.cursor/hooks/multi-window-m-hook-audit.py`（转调本技能 `taskctl.py --host cursor`）。配置见 [references/hooks.md](references/hooks.md)。
-
-### v0.22 收口判定
-
-`audit-round` 现在按顺序输出基础结果和 Full Gate 结果：
-
-- `BASIC_GATE_PASS` + `VERIFY_REQUIRED`：基础材料齐全，但仍需独立验收。
-- `BASIC_GATE_PASS` + `FULL_GATE_FAIL`：有任务未通过，不能收口。
-- `BASIC_GATE_PASS` + `FULL_GATE_PASS` + `ROUND_READY_TO_CLOSE`：本轮所有任务均通过，M1 才能逐项记录 `done`。
-
-即使 Hook 输出成功，也不能替代 M1 本窗重新运行 Full Gate。
-
-### 封闭状态迁移
-
-状态迁移按策略表执行，不是所有任务都走满独立验收：
-
-- 短路径：`pending → in_progress → worker_done → integrated → done`
-- 独立验收：`pending → in_progress → worker_done → verifying → verified → integrated → done`
-
-脚本拒绝非法跳转，并记录 `status_history`。角色约束如下：
-
-- `in_progress`：`M1`
-- `worker_done`：`worker`
-- `verifying`、`verified`：`verifier`
-- `integrated`、`done`：`M1`（短路径上 `worker_done → integrated` 也必须是 M1）
-- `reopened`：`M1`，同时递增 `attempt`
-
-状态显示中的 `done / GATE_FAIL` 只能视为历史字段异常；最终是否收口，以 `transition ... done --actor M1` 是否成功为准。
+- SKILL.md 只描述当前规则；同一任务任何时刻只有一条由 `verification_policy()` 决定的合法收口路径。
+- Gate、`audit-round`、`transition`、M1 收口共用该函数；冲突输出 `POLICY_CONFLICT` 并有测试。
+- 窗口状态轴（`round.json`）与任务状态轴（`manifest.json`）分离；不要把 `M2 verified` 当成任务完成。
 
 ## 核心认知（三条铁规则）
 
@@ -167,7 +46,7 @@ Cursor：用户级 `~/.cursor/hooks.json` 的 `stop` 事件调用 `~/.cursor/hoo
 
 ### 环境：默认与加分
 
-本 skill 不绑死某一款 Agent 软件，也不按软件名写死「永远加分」或「永远排除」。所有宿主都从**默认**开始。
+本 skill 不绑死某一款 Agent 软件，也不按软件名写死「永远加分」或「永远排除」。所有宿主都从**默认**开始。能力确认测试命令按宿主写在 `references/hooks.md`，新窗口跑一次即算本窗确认。
 
 加分只看**这一窗已经确认**的额外能力，不看产品说明书上「可能有」什么。窗间对话是否可见，各宿主不一样；窗间不可见也不等于不能加分——仍可能有别的额外能力（例如能把子代理结果收回本会话）。说明书上有子代理、本窗还没用上或未确认，**不是**加分。
 
@@ -226,6 +105,29 @@ Cursor：用户级 `~/.cursor/hooks.json` 的 `stop` 事件调用 `~/.cursor/hoo
 
 无「本阶段不使用」可写「无」。未列入本轮的编号不得写成缺失或 fail。
 
+## 任务控制（当前规则）
+
+没有 `.task/` 的项目仍按上面的多窗口流程工作。启用 `.task/` 后：
+
+- **唯一策略实现**是 `scripts/taskctl.py` 的 `verification_policy()`。Gate、`audit-round`、`transition`、M1 收口禁止各自解释。
+- **任务状态**写在 `.task/TASK-xxx/manifest.json`。**窗口状态**写在 `.task/round.json` 的 `window_status`。`taskctl status` 可在窗口行旁标注对应任务终态，**不改写** `window_status`。应写成 `TASK-001: verified`、`M2: worker_done`。
+- 低风险且 `attempt < 2` 且未设 `verification_required`：短路径 `worker_done → integrated`（`--actor M1`）→ `done`。其余：独立验收 `worker_done → verifying → verified → integrated → done`。同一时刻只允许走其中一条。
+- 工人只能交 `worker_done`。需要独立验收时，仅 verifier 可交 `verifying` / `verified`。只有 M1 能 `integrated` / `done`。直接编辑 manifest 的状态不算有效收口。
+- 规则冲突（无法唯一决定收口路径，或 manifest 自相矛盾）→ 输出 `POLICY_CONFLICT` 并停止。
+- Full Gate 会重跑可识别的验收命令、核 evidence 路径、有 Git 时核工作区。`manifest.json` / `rerun.json` / `verify-report.json` 不必列入工人 `changed_files`。
+- `--root` 必须放在子命令前面。常用命令与 schema 见 `references/task-gate.md`。
+- 一键自检（不依赖写死的本机路径）：`py -3 scripts/taskctl.py selftest`。
+
+旧项目升级：用**已安装的本技能脚本**执行 `migrate-project --destination scripts/taskctl.py --force`，再跑门禁。
+
+## Hook 边界
+
+Hook 只是触发器，不是验收结论。有 `.task/` 时 `hook-audit` 写 `.task/hook-runs.jsonl`（`start`/`end` 成对，同一 `run_id`，最多 100 行，应 gitignore）。没有 `.task/` 时静默跳过。
+
+Hook **三不**：不改状态、不派工、不标 done。失败只记账。手动 `audit-round` 不能冒充 Hook 证据。即使 Hook 输出成功，也不能替代 M1 本窗重新运行 Full Gate。
+
+宿主差异（事件名、适配器、能力确认测试命令）只写在 `references/hooks.md`。本文件与 `taskctl.py` 不按宿主名分支行为。
+
 ## 自测证据
 
 每个本轮窗口必须有**可原样执行的验收命令**（检查已有文件/能否编译）。禁止只写「自测通过」。必须真跑终端。验收命令**不生成**业务文件。
@@ -241,9 +143,10 @@ Cursor：用户级 `~/.cursor/hooks.json` 的 `stop` 事件调用 `~/.cursor/hoo
 2. 只核这些窗的路径、交付物、验收命令。
 3. 磁盘：产出是否在规定路径。
 4. 本窗重跑验收命令。通过 = **内容通过**。关联会话只当线索。
-5. 本轮名单都通过 → 标 done、记 RECEIPT-LOG、做合并；能开则打开网页预览。临时 C 窗 done 后视为本轮关闭。
-6. 命令失败 → **fail**，打回该窗（由用户再进该窗，不会自动重开）。
-7. 本轮还有窗没交 → **整轮未齐**。
+5. 启用 `.task/` 时：按策略表 `transition` 收口；`audit-round` 出现 `BASIC_GATE_PASS` + `FULL_GATE_PASS` + `ROUND_READY_TO_CLOSE` 后，M1 才能逐项 `done`。出现 `POLICY_CONFLICT` 则停止收口，写 BLOCKERS。
+6. 本轮名单都通过 → 标 done、记 RECEIPT-LOG、做合并；能开则打开网页预览。临时 C 窗 done 后视为本轮关闭。
+7. 命令失败 → **fail**，打回该窗（由用户再进该窗，不会自动重开）。
+8. 本轮还有窗没交 → **整轮未齐**。
 
 禁止：仅凭口头完成、磁盘有文件、或「我看到其他对话」标 done。
 
@@ -251,13 +154,13 @@ Cursor：用户级 `~/.cursor/hooks.json` 的 `stop` 事件调用 `~/.cursor/hoo
 
 ## 长线治理：循环渐进 + 卡点上限 4
 
-每一环：唯一目标、成功标准、证据（diff + 本回合终端原文）、存档点。同一卡点最多 4 次；第 4 次仍 fail → 硬停，写 `docs/BLOCKERS/`，点名下一步 {窗号} 的【斥候|主力|搜剿】或 M1 / 用户。
+每一环：唯一目标、成功标准、证据（diff + 本回合终端原文）、存档点。同一卡点最多 4 次；第 4 次仍 fail → 硬停，写 `docs/BLOCKERS/`，点名下一步 {窗号} 的【斥候|主力|搜剿】或 M1 / 用户。所有任务都必须过最低门禁。规模小不等于免检。
 
 ## 项目文档
 
 M1 创建：`docs/MODULE-REGISTRY.md`、`docs/RECEIPT-LOG.md`、`docs/FIX-PLAN.md`；可选 `docs/BLOCKERS/`、`docs/TOOL-PATHS.md`。格式见 templates.md。
 
-状态机：`pending` → `in_progress` → `review` → `done` | `blocked`。`done` 仅 M1 可标。
+Registry 状态机：`pending` → `in_progress` → `review` → `done` | `blocked`。`done` 仅 M1 可标。这是文档层；启用 `.task/` 后**任务是否完成以 manifest 的 `transition` 为准**，不要用 Registry 手改去覆盖脚本状态。
 
 ## 依赖、并行、集成
 
@@ -265,7 +168,13 @@ M1 创建：`docs/MODULE-REGISTRY.md`、`docs/RECEIPT-LOG.md`、`docs/FIX-PLAN.m
 M1 定标准 → 常驻骨架模块先过查收 → 其余常驻 M 可并行；临时 C 可与常驻并行（各守文件） → M1 集成
 ```
 
-v0.25：若本窗已确认能收回子代理结果，M1 可用宿主子代理加速工人活，但仍按上表守路径；未确认则仍由用户开窗。
+并行只提高效率，不是新工作流：
+
+- 只用**当前宿主已经提供**的多代理 / 子代理。宿主没有就不要强用，不要发明新窗口角色或新编号（不新增 F、Scout 窗、M11+）。
+- 默认流程仍是用户开 M/C 窗并传查收。子代理不是窗号；活必须落在 Registry 已有 M/C 任务和 `allowed_paths` 上。
+- 同一文件仍只让一个任务主改。不能用同一个子代理既当工人又当独立验收。
+- 子代理回传说完成，只当查收**信号/线索**。M1 仍须本窗重跑，仍须 `transition` 收口。
+- 未确认本窗有额外能力时，不要少开窗、少等用户传话，也不要说加分。
 
 | 原则 | 说明 |
 |------|------|
@@ -283,7 +192,9 @@ v0.25：若本窗已确认能收回子代理结果，M1 可用宿主子代理加
 - 未确认加分却说「当前是加分状态」，或凭「产品有子代理」自行升为加分
 - 未点名加分却用「已看到其他对话」标 done
 - 把加分问句写进 Mn/C 开工话术
+- 引用 CHANGELOG 里的旧版块当当前规则
 - 整份覆盖 `manifest.json`，或把 `transition` 改过的 manifest 漏报当成必须打回的业务文件
 - 让工人申报 `verify-report.json`，或让 C1 改 `worker-report.json` 来过 G2
 - 子窗口自行标 done；没跑终端只编 PASS；子窗口打开网页预览
 - M1 未经点名、未经同意就亲自改子模块
+- 低风险短路径与独立验收两条路同时走，或忽略 `POLICY_CONFLICT` 继续收口
