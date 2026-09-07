@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Minimal, dependency-free task gate for multi-window_M v0.31.
+"""Minimal, dependency-free task gate for multi-window_M v0.32.
 
 Core behavior is host-agnostic. migrate-project backs up, writes a report and
 skill-lock, then copies. Feature work waits for migrate-project --check
@@ -70,7 +70,7 @@ GENERATED_STATUS_REL = "docs/TASK-STATUS.md"
 GENERATED_STATUS_MARKER = "<!-- taskctl:generated-status; do not edit -->"
 HOOK_LOG_MAX_LINES = 100
 RERUN_TIMEOUT_SEC = 60
-SKILL_VERSION = "0.31"
+SKILL_VERSION = "0.32"
 LOCK_REL = ".task/skill-lock.json"
 MIGRATE_REPORT_REL = "docs/MIGRATE-REPORT.md"
 SOURCE_HOST = {
@@ -2211,7 +2211,7 @@ def root_after_subcommand(tokens: List[str]) -> bool:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="multi-window_M v0.31 task gate",
+        description="multi-window_M v0.32 task gate",
         epilog="Place --root before the subcommand: taskctl.py --root <dir> status",
     )
     parser.add_argument(
@@ -2252,7 +2252,7 @@ def build_parser() -> argparse.ArgumentParser:
     hook = sub.add_parser("hook-audit", help="record a Stop-hook run and audit the current round")
     hook.add_argument("--source", choices=["manual", "codex-stop", "cursor-stop", "zcode-stop"], default="manual")
     hook.add_argument("--host", choices=["cursor", "codex", "zcode", "manual"])
-    migrate = sub.add_parser("migrate-project", help="backup, report, copy this v0.31 taskctl, then --check")
+    migrate = sub.add_parser("migrate-project", help="backup, report, copy this v0.32 taskctl, then --check")
     migrate.add_argument("--destination", default="scripts/taskctl.py")
     migrate.add_argument("--force", action="store_true", help="replace an existing destination after backup")
     migrate.add_argument(

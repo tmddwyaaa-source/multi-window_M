@@ -1,4 +1,4 @@
-"""v0.31: migrate-project backs up, reports, locks; --check must pass before new work."""
+"""v0.32: migrate-project still backs up, reports, locks; version lock is 0.32."""
 from __future__ import annotations
 
 import json
@@ -33,7 +33,7 @@ def run(args: list[str], cwd: Path | None = None, script: Path | None = None) ->
 
 
 def main() -> int:
-    root = Path(tempfile.mkdtemp(prefix="v031-mig-"))
+    root = Path(tempfile.mkdtemp(prefix="v032-mig-"))
     dest = root / "scripts" / "taskctl.py"
 
     code, out = run(["--root", str(root), "migrate-project", "--check"], cwd=root)
@@ -57,8 +57,8 @@ def main() -> int:
     lock = json.loads((root / ".task" / "skill-lock.json").read_text(encoding="utf-8"))
     expect(
         "M-pos-lock-fields",
-        lock.get("skill_version") == "0.31"
-        and lock.get("taskctl_version") == "0.31"
+        lock.get("skill_version") == "0.32"
+        and lock.get("taskctl_version") == "0.32"
         and bool(lock.get("migrated_at"))
         and lock.get("backup") == ""
         and lock.get("status") == "copied",
@@ -67,7 +67,7 @@ def main() -> int:
     report = (root / "docs" / "MIGRATE-REPORT.md").read_text(encoding="utf-8")
     expect(
         "M-pos-report",
-        "skill_version: 0.31" in report and "MIGRATE_READY" in report,
+        "skill_version: 0.32" in report and "MIGRATE_READY" in report,
         report,
     )
     first_bytes = dest.read_bytes()
@@ -93,7 +93,7 @@ def main() -> int:
         backup.is_file() and backup.read_bytes() == old_bytes and dest.read_bytes() != old_bytes,
         f"backup={backup} lock={lock}",
     )
-    expect("M-pos-force-is-031", b"v0.31" in dest.read_bytes(), dest.read_text(encoding="utf-8")[:80])
+    expect("M-pos-force-is-032", b"v0.32" in dest.read_bytes(), dest.read_text(encoding="utf-8")[:80])
 
     code, out = run(
         ["--root", str(root), "migrate-project", "--destination", "scripts/taskctl.py", "--force"],
@@ -128,11 +128,11 @@ def main() -> int:
     code, out = run(["--root", str(root), "handoff"], cwd=root)
     expect(
         "M-pos-handoff-ready",
-        code == 0 and "skill_version: 0.31" in out and "MIGRATE_CHECK_INCOMPLETE" not in out,
+        code == 0 and "skill_version: 0.32" in out and "MIGRATE_CHECK_INCOMPLETE" not in out,
         out,
     )
 
-    print("ALL v0.31 MIGRATE CHECKS PASSED")
+    print("ALL v0.32 MIGRATE CHECKS PASSED")
     return 0
 
 

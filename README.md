@@ -2,23 +2,22 @@
 
 多窗口协作 skill：常驻 **M1～M10**，临时 **Cn**（一轮最多 4 个）。用共享文档（模块注册表）和 `taskctl.py` 门禁，让多个 Agent 窗口在同一项目上分工，而不是靠窗口之间互相看见聊天记录。
 
-仓库目录名固定为 `multi-window_M`。**当前版本写在 `SKILL.md` 开头的 `version` 字段**（现为 **0.31**）。升级系列期间，skill 的 `name` 与本机隔离文件夹带版本号（`multi-window_M-0.31`），避免覆盖上一版。
+仓库目录名固定为 `multi-window_M`。**当前版本写在 `SKILL.md` 开头的 `version` 字段**（现为 **0.32**）。升级系列期间，skill 的 `name` 与本机隔离文件夹带版本号（`multi-window_M-0.32`），避免覆盖上一版。
 
-对话里调用：`/multi-window_M-0.31`
+对话里调用：`/multi-window_M-0.32`
 
-## 当前版本：0.31 — 迁移治理
+## 当前版本：0.32 — 窗口身份收口
 
-**要解决的唯一问题：** 旧项目被直接覆盖 `taskctl.py`，没有备份和版本记录，升级后未过检查就继续开发。
+**要解决的唯一问题：** 窗号怎么写，收成一处；不新开窗类别。
 
 **这版改了什么：**
 
-- `migrate-project` 覆盖前先备份到 `.task/migrate-backups/`，并写 `docs/MIGRATE-REPORT.md`。
-- `.task/skill-lock.json` 记录 `skill_version` / `taskctl_version` / `migrated_at`。
-- 已有目标且无 `--force`，或把正在运行的脚本迁到自己身上 → `MIGRATE_FAIL`。
-- 迁完必须 `migrate-project --check`（基本门禁、Full Gate 可跑、Hook 不改状态、负向仍拒绝）。通过才 `MIGRATE_READY`。未就绪不要开发新功能。
-- `--check` 是迁移健康检查，不是把所有任务标 done。
+- SKILL 增加唯一权威节「窗口身份（窗号）」。铁规则 1～2、对窗说话、反模式、templates 只指向该节。
+- 合法窗号仍是 `M1`～`M10` 与 `C`+数字。词法以 `WINDOW_RE` / `valid_window()` 为准，文档是镜像。
+- 不再把 `CBn` 当一种窗号来教。产出用普通文件名。
+- `round-init` 仍拒绝非法窗号、重复窗号、一轮超过 4 个临时 C。不新增失败 token。
 
-**这版没改：** 窗号、状态机、挡位、hook 证据规则、`source_refs`、`brief` / `handoff`、`status --markdown`。Hook 仍三不。
+**这版没改：** 状态机、挡位、hook 证据、`source_refs`、`brief` / `handoff`、`status --markdown`、migrate-project 流程。Hook 仍三不。临时 C 上限仍是 4。
 
 一键自检：
 
@@ -26,7 +25,7 @@
 py -3 scripts/taskctl.py selftest
 ```
 
-应包含 `test_migrate_project.py`。
+应包含 `test_window_ids.py`。
 
 ## 它做什么
 
@@ -36,15 +35,15 @@ py -3 scripts/taskctl.py selftest
 4. M1 跑 `brief` 派工。用户把「{窗号} 已完成」送到 M1。M1 **本窗重跑**，再 `transition` 收口。
 5. Stop Hook（可选）只记账，**不**替 M1 标 done。
 
-查收永远以本窗重跑为准。子代理回传、关联会话只能当线索。
+查收永远以本窗重跑为准。子代理回传、关联会话只能当线索。窗号规则见 SKILL「窗口身份」。
 
 ## 安装（升级系列：隔离副本）
 
-不要覆盖已经在用的 `multi-window_M` 或 `multi-window_M-0.26`～`0.30`。复制本仓库到带版本号的文件夹：
+不要覆盖已经在用的 `multi-window_M` 或 `multi-window_M-0.26`～`0.31`。复制本仓库到带版本号的文件夹：
 
 | 宿主 | 建议路径 | 调用 |
 |------|----------|------|
-| Cursor | `~/.cursor/skills/multi-window_M-0.31/` | `/multi-window_M-0.31` |
+| Cursor | `~/.cursor/skills/multi-window_M-0.32/` | `/multi-window_M-0.32` |
 | Codex | 升级系列完成后由维护者**手动**复制 | — |
 
 旧项目把门禁脚本拷进仓库（`--root` 必须在子命令前面）：
@@ -64,11 +63,11 @@ Hook 接线、各宿主能力确认测试命令：[`references/hooks.md`](refere
 
 | 路径 | 说明 |
 |------|------|
-| `SKILL.md` | 当前规则；`name` / `version` 现为 0.31 |
-| `CHANGELOG.md` | 0.20～0.31 历史；不是当前规则 |
+| `SKILL.md` | 当前规则；`name` / `version` 现为 0.32 |
+| `CHANGELOG.md` | 0.20～0.32 历史；不是当前规则 |
 | `templates.md` | 开场、brief/handoff、迁移命令 |
 | `scripts/taskctl.py` | 门禁；`migrate-project` / `--check` / `selftest` |
-| `scripts/test_*.py` | 含 `test_migrate_project.py`；由 `selftest` 调用 |
+| `scripts/test_*.py` | 含 `test_window_ids.py`；由 `selftest` 调用 |
 | `references/task-gate.md` | G0～G3、schema、`MIGRATE_FAIL` / `MIGRATE_READY` |
 | `references/hooks.md` | Codex / Cursor / ZCode 适配与能力确认 |
 | `testdata/` | 历史沙盒与测试记录 |
@@ -94,14 +93,14 @@ py -3 scripts/taskctl.py --root <项目根> audit-round
 |------|------|
 | GitHub 仓库名 / 根目录 | 始终 `multi-window_M` |
 | `SKILL.md` 的 `version` | 唯一权威版本号 |
-| 升级系列本机文件夹与 `name` | `multi-window_M-0.31` 这类隔离副本，不覆盖上一版 |
+| 升级系列本机文件夹与 `name` | `multi-window_M-0.32` 这类隔离副本，不覆盖上一版 |
 | 系列完成后 | 可考虑改回无版本号的日常 `name`，并手动同步 Codex |
 
-测新版本请调用 `/multi-window_M-0.31`。
+测新版本请调用 `/multi-window_M-0.32`。
 
 ## 后续路线
 
-v0.26～v0.31 统一升级路线到此结束。已知限制：Codex 未自动同步；跨宿主 hook 冒烟仍待实测。不要同一版本再混改角色、状态机或证据格式。
+0.32 只收窗口身份表述，不改行为。已知限制：Codex 未自动同步；跨宿主 hook 冒烟仍待实测。不要同一版本再混改角色、状态机或证据格式。不要未点名就把临时 C 上限改成 3。
 
 ## 许可证与隐私
 
