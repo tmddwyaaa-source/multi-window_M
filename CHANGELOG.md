@@ -2,6 +2,13 @@
 
 当前规则以 `SKILL.md` 的 `version` 字段为准。本文件只作历史说明，**不得当作当前规则引用**。
 
+## 0.31 — 迁移治理（2026-09-07）
+
+- `migrate-project` 覆盖前先备份到 `.task/migrate-backups/`，并写 `docs/MIGRATE-REPORT.md`。
+- `.task/skill-lock.json` 记录 `skill_version` / `taskctl_version` / `migrated_at`。
+- 迁完必须 `migrate-project --check`（基本门禁、Full Gate 可跑、Hook 不改状态、负向仍拒绝）。通过才 `MIGRATE_READY`。
+- 已有目标且无 `--force`、或迁到正在运行的自身 → `MIGRATE_FAIL`。
+
 ## 0.30 — 挡位正式化 + 证据收紧（2026-09-07）
 
 - 开局自报三套挡位。`round.json` 增加 `gears` / `hook_supervision` / `subagents`。

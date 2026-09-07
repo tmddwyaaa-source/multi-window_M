@@ -59,6 +59,8 @@ py -3 scripts/taskctl.py --root <项目根> status --markdown --write
 - `GEAR_VIOLATION`：未确认却宣称 bonus / 协作挡 A，停止收口。
 - `HOOK_EVIDENCE_MISSING`：声明了 hook 监督但没有宿主 stop 的 start/end 对，停止收口。
 - `PARALLEL_FAIL`：子代理同文件并发、重复、工人兼 verifier 或越权路径，停止收口。
+- `MIGRATE_FAIL`：无备份许可的覆盖、无 lock 就 `--check`、或把运行中的脚本迁到自己身上。
+- `MIGRATE_READY` / `MIGRATE_CHECK_FAIL`：`migrate-project --check` 的四项迁移健康检查。
 
 脚本负责输出 `RESULT PASS` / `RESULT FAIL` / `POLICY_CONFLICT`；agent 不得只凭口头或自行打印 PASS。
 
@@ -107,6 +109,7 @@ py -3 scripts/taskctl.py status
 py -3 scripts/taskctl.py status --markdown
 py -3 scripts/taskctl.py status --markdown --write
 py -3 scripts/taskctl.py --root <项目根> migrate-project --destination scripts/taskctl.py --force
+py -3 scripts/taskctl.py --root <项目根> migrate-project --check
 py -3 scripts/taskctl.py transition TASK-001 in_progress --actor M1
 py -3 scripts/taskctl.py transition TASK-001 worker_done --actor worker
 py -3 scripts/taskctl.py transition TASK-001 integrated --actor M1
@@ -116,6 +119,8 @@ py -3 scripts/taskctl.py transition TASK-001 verified --actor verifier
 ```
 
 `brief` / `handoff` / `status --markdown` 默认不改 `.task/` 状态。`--write` 只覆盖 `docs/TASK-STATUS.md`。无 `.task/` 时 `--markdown` → `STATUS_FAIL: no .task`。`--role` 仅 `worker|scout|verifier`。缺失 task 或非法 role → `BRIEF_FAIL`。无 `.task/` 跑 `handoff` → `HANDOFF_FAIL`。
+
+`migrate-project` 覆盖已有 `scripts/taskctl.py` 必须 `--force`，且先备份。报告与 lock 写完后再 `--check`。未 `MIGRATE_READY` 不要开发新功能。`--check` 不要求项目内所有任务 Full Gate PASS，只要求迁入的脚本能跑门禁、Hook 不改状态、负向路径仍被拒绝。
 
 前四条 `transition` 是 **low 且 attempt < 2** 的短路径（M1 查收时本窗重跑 Full Gate 后再 `integrated`）。后两条仅在策略表要求独立验收时使用；medium/high 或 `attempt >= 2` **禁止** `worker_done → integrated`。
 

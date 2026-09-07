@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Minimal, dependency-free task gate for multi-window_M v0.30.
+"""Minimal, dependency-free task gate for multi-window_M v0.31.
 
-Core behavior is host-agnostic. verification_policy() is the only close-path
-table. Gears are recorded on the round; fake high gear and missing host-stop
-hook evidence fail audit-round close. Hook still does not mutate status.
+Core behavior is host-agnostic. migrate-project backs up, writes a report and
+skill-lock, then copies. Feature work waits for migrate-project --check
+(MIGRATE_READY). Hook still does not mutate status.
 """
 
 from __future__ import annotations
@@ -70,6 +70,9 @@ GENERATED_STATUS_REL = "docs/TASK-STATUS.md"
 GENERATED_STATUS_MARKER = "<!-- taskctl:generated-status; do not edit -->"
 HOOK_LOG_MAX_LINES = 100
 RERUN_TIMEOUT_SEC = 60
+SKILL_VERSION = "0.31"
+LOCK_REL = ".task/skill-lock.json"
+MIGRATE_REPORT_REL = "docs/MIGRATE-REPORT.md"
 SOURCE_HOST = {
     "cursor-stop": "cursor",
     "codex-stop": "codex",
@@ -1304,18 +1307,207 @@ def cmd_hook_audit(root: Path, source: str, host: Optional[str] = None) -> int:
 
 
 def cmd_migrate_project(args: argparse.Namespace, root: Path) -> int:
+    if getattr(args, "check", False):
+        return cmd_migrate_check(root)
     destination = safe_destination(root, args.destination)
     source = Path(__file__).resolve()
     if destination == source:
-        print("FAIL: destination is the currently running v0.30 script")
+        print(f"MIGRATE_FAIL: destination is the currently running v{SKILL_VERSION} script")
         return 1
-    if destination.exists() and not args.force:
-        print(f"FAIL: destination exists; add --force to replace: {destination.relative_to(root)}")
+    dest_existed = destination.exists()
+    if dest_existed and not args.force:
+        print(
+            "MIGRATE_FAIL: destination exists; add --force to replace "
+            f"(backup is written first): {destination.relative_to(root)}"
+        )
         return 1
+
+    backup_rel = ""
+    if dest_existed:
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        backup_dir = task_root(root) / "migrate-backups" / stamp
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        backup_file = backup_dir / destination.name
+        shutil.copyfile(destination, backup_file)
+        backup_rel = str(backup_file.relative_to(root)).replace("\\", "/")
+        print(f"BACKUP {backup_rel}")
+
+    dest_rel = str(destination.relative_to(root)).replace("\\", "/")
+    lock: Dict[str, Any] = {
+        "skill_version": SKILL_VERSION,
+        "taskctl_version": SKILL_VERSION,
+        "migrated_at": now_iso(),
+        "source": str(source),
+        "destination": dest_rel,
+        "backup": backup_rel,
+        "checks": {},
+        "status": "planned",
+    }
+    write_migrate_report(root, lock)
+    print(f"REPORT {MIGRATE_REPORT_REL}")
+
     destination.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(source, destination)
-    print(f"MIGRATED {destination.relative_to(root)} from multi-window_M v0.30")
+    task_root(root).mkdir(parents=True, exist_ok=True)
+    lock["status"] = "copied"
+    write_json(lock_path(root), lock)
+    write_migrate_report(root, lock)
+    print(f"MIGRATED {dest_rel} from multi-window_M v{SKILL_VERSION}")
+    print("NEXT: py -3 scripts/taskctl.py --root <project> migrate-project --check")
+    print("Do not continue feature work until MIGRATE_READY")
     return 0
+
+
+def lock_path(root: Path) -> Path:
+    return task_root(root) / "skill-lock.json"
+
+
+def write_migrate_report(root: Path, lock: Dict[str, Any]) -> Path:
+    path = root / MIGRATE_REPORT_REL
+    path.parent.mkdir(parents=True, exist_ok=True)
+    checks = lock.get("checks") or {}
+    lines = [
+        "# 迁移报告",
+        "",
+        f"- 时间: {lock.get('migrated_at') or now_iso()}",
+        f"- skill_version: {lock.get('skill_version')}",
+        f"- taskctl_version: {lock.get('taskctl_version')}",
+        f"- source: {lock.get('source')}",
+        f"- destination: {lock.get('destination')}",
+        f"- backup: {lock.get('backup') or '(none — first copy)'}",
+        f"- status: {lock.get('status')}",
+        "",
+        "## 四项检查",
+        "",
+    ]
+    if not checks:
+        lines.extend(
+            [
+                "尚未运行。下一步：",
+                "",
+                "```text",
+                "py -3 scripts/taskctl.py --root <项目根> migrate-project --check",
+                "```",
+                "",
+                "未出现 `MIGRATE_READY` 前不要继续开发新功能。",
+                "",
+            ]
+        )
+    else:
+        for key in ("basic", "full", "hook", "negative"):
+            lines.append(f"- {key}: {checks.get(key, 'missing')}")
+        if lock.get("checked_at"):
+            lines.append(f"- checked_at: {lock.get('checked_at')}")
+        lines.append("")
+        if lock.get("status") == "ready":
+            lines.append("`MIGRATE_READY`。可以继续开发。")
+        else:
+            lines.append("`MIGRATE_CHECK_FAIL`。修好后再 `--check`，不要继续开发。")
+        lines.append("")
+    path.write_text("\n".join(lines), encoding="utf-8")
+    return path
+
+
+def run_copied_taskctl(dest: Path, args: List[str], cwd: Path) -> Tuple[int, str]:
+    env = os.environ.copy()
+    env["PYTHONIOENCODING"] = "utf-8"
+    completed = subprocess.run(
+        [sys.executable, str(dest), *args],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        env=env,
+        cwd=str(cwd),
+    )
+    return completed.returncode, (completed.stdout or "") + (completed.stderr or "")
+
+
+def first_task_id(root: Path) -> str:
+    for directory in sorted(task_root(root).glob("TASK-*")):
+        if (directory / "manifest.json").exists():
+            return directory.name
+    return ""
+
+
+def cmd_migrate_check(root: Path) -> int:
+    path = lock_path(root)
+    if not path.exists():
+        print("MIGRATE_FAIL: no .task/skill-lock.json; run migrate-project first")
+        return 1
+    try:
+        lock = read_json(path)
+    except ValueError as exc:
+        print(f"MIGRATE_FAIL: {exc}")
+        return 1
+    dest_rel = str(lock.get("destination") or "scripts/taskctl.py")
+    destination = safe_destination(root, dest_rel)
+    if not destination.exists():
+        print(f"MIGRATE_FAIL: migrated destination missing: {dest_rel}")
+        return 1
+
+    checks: Dict[str, str] = {}
+    dest_text = destination.read_text(encoding="utf-8", errors="replace")
+    version_ok = f"v{SKILL_VERSION}" in dest_text and str(lock.get("skill_version")) == SKILL_VERSION
+    checks["basic"] = "pass" if version_ok else "fail"
+
+    task_id = first_task_id(root)
+    if not task_id:
+        checks["full"] = "pass"
+    else:
+        code, out = run_copied_taskctl(
+            destination, ["--root", str(root), "gate", task_id], cwd=root
+        )
+        runnable = code in {0, 1} and (
+            "RESULT" in out or "POLICY_CONFLICT" in out or "FAIL" in out
+        )
+        checks["full"] = "pass" if runnable else "fail"
+
+    before = load_task_statuses(root)
+    hook_code, hook_out = run_copied_taskctl(
+        destination,
+        ["--root", str(root), "hook-audit", "--source", "manual"],
+        cwd=root,
+    )
+    after = load_task_statuses(root)
+    hook_ok = (
+        hook_code in {0, 1}
+        and ("HOOK_RUN_RECORDED" in hook_out or "HOOK_AUDIT_SKIP" in hook_out)
+        and before == after
+    )
+    checks["hook"] = "pass" if hook_ok else "fail"
+
+    place_code, place_out = run_copied_taskctl(
+        destination, ["status", "--root", str(root)], cwd=root
+    )
+    no_force_code, no_force_out = run_copied_taskctl(
+        destination,
+        ["--root", str(root), "migrate-project", "--destination", dest_rel],
+        cwd=root,
+    )
+    negative_ok = (
+        place_code != 0
+        and "must come before" in place_out
+        and no_force_code != 0
+        and "MIGRATE_FAIL" in no_force_out
+    )
+    checks["negative"] = "pass" if negative_ok else "fail"
+
+    lock["checks"] = checks
+    lock["checked_at"] = now_iso()
+    ready = all(checks.get(key) == "pass" for key in ("basic", "full", "hook", "negative"))
+    lock["status"] = "ready" if ready else "check_failed"
+    write_json(path, lock)
+    write_migrate_report(root, lock)
+    if ready:
+        print("MIGRATE_READY")
+        for key in ("basic", "full", "hook", "negative"):
+            print(f"- {key}: pass")
+        return 0
+    print("MIGRATE_CHECK_FAIL")
+    for key in ("basic", "full", "hook", "negative"):
+        print(f"- {key}: {checks.get(key, 'missing')}")
+    return 1
 
 
 def load_task_statuses(root: Path) -> Dict[str, str]:
@@ -1889,6 +2081,32 @@ def cmd_handoff(root: Path) -> int:
             for window in windows:
                 print(f"- WINDOW {window}: {window_status.get(window, 'MISSING')}")
     print()
+    print("## 迁移")
+    lock_file = lock_path(root)
+    if not lock_file.exists():
+        print("- 无 skill-lock.json。旧项目先 migrate-project，再 --check，未 MIGRATE_READY 不要开发新功能")
+    else:
+        try:
+            lock = read_json(lock_file)
+        except ValueError as exc:
+            print(f"- invalid skill-lock.json ({exc})")
+            lock = {}
+        print(f"- skill_version: {lock.get('skill_version') or '?'}")
+        print(f"- taskctl_version: {lock.get('taskctl_version') or '?'}")
+        print(f"- migrated_at: {lock.get('migrated_at') or '?'}")
+        print(f"- backup: {lock.get('backup') or '(none)'}")
+        print(f"- status: {lock.get('status') or '?'}")
+        checks = lock.get("checks") or {}
+        if checks:
+            print(
+                "- checks: "
+                + ", ".join(f"{key}={checks.get(key)}" for key in ("basic", "full", "hook", "negative"))
+            )
+        else:
+            print("- checks: 尚未运行 migrate-project --check")
+        if lock.get("status") != "ready":
+            print("MIGRATE_CHECK_INCOMPLETE")
+    print()
     print("## 任务")
     statuses = load_task_statuses(root)
     if not statuses:
@@ -1943,6 +2161,7 @@ def cmd_handoff(root: Path) -> int:
     else:
         print("- 本轮任务已闭环。新需求先 init + brief，不要只改聊天话术")
     print("- 窗口状态 ≠ 任务完成；不要把 M/C verified 当成 TASK done")
+    print("- 旧项目未 MIGRATE_READY 则不要开发新功能")
     return 0
 
 
@@ -1992,7 +2211,7 @@ def root_after_subcommand(tokens: List[str]) -> bool:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="multi-window_M v0.30 task gate",
+        description="multi-window_M v0.31 task gate",
         epilog="Place --root before the subcommand: taskctl.py --root <dir> status",
     )
     parser.add_argument(
@@ -2033,9 +2252,14 @@ def build_parser() -> argparse.ArgumentParser:
     hook = sub.add_parser("hook-audit", help="record a Stop-hook run and audit the current round")
     hook.add_argument("--source", choices=["manual", "codex-stop", "cursor-stop", "zcode-stop"], default="manual")
     hook.add_argument("--host", choices=["cursor", "codex", "zcode", "manual"])
-    migrate = sub.add_parser("migrate-project", help="copy this v0.30 taskctl into the project")
+    migrate = sub.add_parser("migrate-project", help="backup, report, copy this v0.31 taskctl, then --check")
     migrate.add_argument("--destination", default="scripts/taskctl.py")
-    migrate.add_argument("--force", action="store_true", help="replace an existing destination")
+    migrate.add_argument("--force", action="store_true", help="replace an existing destination after backup")
+    migrate.add_argument(
+        "--check",
+        action="store_true",
+        help="run basic/full/hook/negative smokes; require MIGRATE_READY before new work",
+    )
     status_parser = sub.add_parser("status", help="show window and task states")
     status_parser.add_argument(
         "--markdown",

@@ -1,39 +1,37 @@
 ---
-name: multi-window_M-0.30
+name: multi-window_M-0.31
 description: >-
   多窗口分工：常驻仅 M1～M10；短期任务用临时窗 C1、C2（一轮最多 4 个）。
   禁止 M11+、禁止 CB1 当窗号。json 文件名 CB2 只给脚本认。
-  开局自报三套挡位；未确认禁止报加分或走协作挡 A。
-  hook_supervision 为真时收口必须有宿主 stop 的 start/end 对，手动 audit-round 不能替代。
-  子代理必须绑定 task_id/window/allowed_paths/run_id。
-  状态表只由 taskctl status --markdown 从 .task/ 渲染；派工用 brief，接班用 handoff。
-  默认不说加分；M1 唯一收口；查收以本窗重跑为准。
+  旧项目 migrate-project 必须先备份并出迁移报告，写入 skill_version / taskctl_version / 迁移时间；
+  --check 过基本门禁、Full Gate、Hook、负向后才继续开发。
+  开局自报三套挡位；未确认禁止报加分。M1 唯一收口；查收以本窗重跑为准。
   规则只描述当前行为；门禁细节见 references/task-gate.md。
   斥候→主力→搜剿；卡点最多 4 次。
   在用户提到多窗口、M1、C1、查收、模块注册表、斥候/主力/搜剿时使用。
-version: "0.30"
+version: "0.31"
 disable-model-invocation: true
 ---
 
-# Multi-Window_M-0.30（常驻 M1～M10，临时 Cn）
+# Multi-Window_M-0.31（常驻 M1～M10，临时 Cn）
 
-本文件夹名带版本号，是升级系列的隔离副本；`version` 字段也是 0.30。调用：`/multi-window_M-0.30`。历史版本说明见 [CHANGELOG.md](CHANGELOG.md)，不得当作当前规则。
+本文件夹名带版本号，是升级系列的隔离副本；`version` 字段也是 0.31。调用：`/multi-window_M-0.31`。历史版本说明见 [CHANGELOG.md](CHANGELOG.md)，不得当作当前规则。
 
 复制即用话术见 [templates.md](templates.md)。G0～G3、manifest schema、`transition` 表见 [references/task-gate.md](references/task-gate.md)。宿主 Hook 接线只允许写在 [references/hooks.md](references/hooks.md)。
 
 ## 本版唯一问题与成功标准
 
-**问题：** 低挡假装高挡，或声称有 hook 监督却没有宿主 stop 日志，仍把任务标完成。
+**问题：** 旧项目被直接覆盖 `taskctl.py`，没有备份和版本记录，升级后未过检查就继续开发。
 
 **成功标准：**
 
-- 开局自报三套挡位（能力 / 协作 / 风险）。能力未确认一律默认；协作挡 A 仅限已确认加分。
-- `round.json` 可写 `gears`（`capability=default|bonus`，`collaboration=P|A`，`capability_confirmed`）。未确认却写 bonus 或 A → `GEAR_VIOLATION`，停止收口。
-- `hook_supervision=true` 时，`audit-round` 收口必须看到宿主 stop（`cursor-stop` / `codex-stop` / `zcode-stop`）的完整 start/end 对。缺日志或只有 `manual` → `HOOK_EVIDENCE_MISSING`。手动 `audit-round` 成功不能替代 hook 证据。
-- 子代理写入 `subagents`（`task_id` / `window` / `allowed_paths` / `run_id`）。同文件并发、重复 run_id、工人兼 verifier、越权路径 → `PARALLEL_FAIL`。
-- Hook 仍遵守三不：不改状态、不派工、不标 done。加分 / A 挡不放松验收：漏跑独立验收仍 `FULL_GATE_FAIL`。
+- `migrate-project` 覆盖前先备份到 `.task/migrate-backups/`，并写 `docs/MIGRATE-REPORT.md`。
+- 写入 `.task/skill-lock.json`：`skill_version`、`taskctl_version`、`migrated_at`。
+- 已有目标文件且无 `--force` → `MIGRATE_FAIL`（不覆盖、不丢备份）。不能把正在运行的脚本迁到自己身上。
+- 迁完后必须 `migrate-project --check`（基本门禁 / Full Gate 可跑 / Hook 不改状态 / 负向仍拒绝）。通过才打 `MIGRATE_READY`。未就绪不要开发新功能。
+- `--check` 是迁移健康检查，不是把所有任务标 done。任务仍须本窗重跑与 `transition`。
 
-0.29 的 `source_refs`、0.28 的状态视图、0.27 的 `brief` / `handoff`、0.26 的 `POLICY_CONFLICT` 仍是当前规则。本版不改窗号、状态机转移表或目录结构。
+0.30 的挡位与 hook 证据、0.29 的 `source_refs`、0.28 的状态视图、0.27 的 `brief` / `handoff`、0.26 的 `POLICY_CONFLICT` 仍是当前规则。本版不改窗号、状态机转移表或 Hook 三不。
 
 ## 核心认知（三条铁规则）
 
@@ -141,7 +139,7 @@ disable-model-invocation: true
 - **Hook 证据：** `hook_supervision=true` 时，收口必须有宿主 stop 的 start/end 对。缺日志或只有 manual → `HOOK_EVIDENCE_MISSING`。无 hook 宿主不要打开 `hook_supervision`，以免卡死最低挡。
 - **子代理绑定：** 派出的子代理写入 `subagents`（`task_id` / `window` / `allowed_paths` / `run_id`）。同文件并发、重复、工人兼 verifier、越权 → `PARALLEL_FAIL`。
 
-旧项目升级：用**已安装的本技能脚本**执行 `migrate-project --destination scripts/taskctl.py --force`，再跑门禁。
+旧项目升级：用**已安装的本技能脚本**执行 `migrate-project --destination scripts/taskctl.py --force`（先备份再覆盖），再跑 `migrate-project --check`。未出现 `MIGRATE_READY` 前不要开发新功能。项目记录在 `.task/skill-lock.json`，报告在 `docs/MIGRATE-REPORT.md`。
 
 ## Hook 边界
 
@@ -236,3 +234,5 @@ M1 定标准 → 常驻骨架模块先过查收 → 其余常驻 M 可并行；�
 - `hook_supervision=true` 却用手动 `audit-round` / `--source manual` 冒充 hook 证据
 - 派出子代理却不写 `subagents`，或同文件并发 / 工人兼 verifier / 越权路径仍收口
 - 加分或 A 挡漏跑独立验收，仍把任务标完成
+- 旧项目直接 `--force` 覆盖 `taskctl.py` 却不备份、不写报告 / `skill-lock.json`
+- 迁移后未 `MIGRATE_READY` 就开始开发新功能；无 `--force` 时覆盖已有脚本；把正在运行的脚本迁到自己身上
