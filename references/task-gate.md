@@ -11,7 +11,13 @@
 
 不要写 `M2 verified` 当任务完成。应写 `TASK-001: verified`、`M2: worker_done`。`taskctl status` 可在窗口行旁标注任务终态（全部 `done` 时 `note=tasks_closed`），**不改写** `window_status`。
 
-Registry / RECEIPT-LOG 是给人看的文档层，不能代替 manifest 状态。
+Registry / RECEIPT-LOG 是给人看的路径与叙事，**不能代替** manifest 状态。启用 `.task/` 后，状态表只允许来自：
+
+```text
+py -3 scripts/taskctl.py --root <项目根> status --markdown --write
+```
+
+生成 `docs/TASK-STATUS.md`（文件头有 `taskctl:generated-status`）。禁止手改。手写 Registry/RECEIPT 的 pending/done 与本表冲突时，以本表和 `.task/` 为准。
 
 ## 唯一策略表
 
@@ -86,6 +92,8 @@ py -3 scripts/taskctl.py gate TASK-001
 py -3 scripts/taskctl.py audit-round
 py -3 scripts/taskctl.py reopen TASK-001 --reason "人工验收发现遗漏"
 py -3 scripts/taskctl.py status
+py -3 scripts/taskctl.py status --markdown
+py -3 scripts/taskctl.py status --markdown --write
 py -3 scripts/taskctl.py --root <项目根> migrate-project --destination scripts/taskctl.py --force
 py -3 scripts/taskctl.py transition TASK-001 in_progress --actor M1
 py -3 scripts/taskctl.py transition TASK-001 worker_done --actor worker
@@ -95,7 +103,7 @@ py -3 scripts/taskctl.py transition TASK-001 verifying --actor verifier
 py -3 scripts/taskctl.py transition TASK-001 verified --actor verifier
 ```
 
-`brief` / `handoff` 只打印，不改 `.task/` 状态。`--role` 仅 `worker|scout|verifier`。缺失 task 或非法 role → `BRIEF_FAIL`。无 `.task/` → `HANDOFF_FAIL`。
+`brief` / `handoff` / `status --markdown` 默认不改 `.task/` 状态。`--write` 只覆盖 `docs/TASK-STATUS.md`。无 `.task/` 时 `--markdown` → `STATUS_FAIL: no .task`。`--role` 仅 `worker|scout|verifier`。缺失 task 或非法 role → `BRIEF_FAIL`。无 `.task/` 跑 `handoff` → `HANDOFF_FAIL`。
 
 前四条 `transition` 是 **low 且 attempt < 2** 的短路径（M1 查收时本窗重跑 Full Gate 后再 `integrated`）。后两条仅在策略表要求独立验收时使用；medium/high 或 `attempt >= 2` **禁止** `worker_done → integrated`。
 

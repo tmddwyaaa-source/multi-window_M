@@ -2,6 +2,13 @@
 
 当前规则以 `SKILL.md` 的 `version` 字段为准。本文件只作历史说明，**不得当作当前规则引用**。
 
+## 0.28 — 文档变视图（2026-09-07）
+
+- `taskctl.py status --markdown` 从 `.task/` 渲染窗口/任务状态表与 RECEIPT 摘要。
+- `--write` 写入 `docs/TASK-STATUS.md`；禁止手改，只由渲染再生。
+- 成功标准：消灭 Registry / RECEIPT-LOG 与 `.task/` 的 pending/done 双写漂移。手写文档状态不是权威。
+- 负向：无 `.task/` 时 `--markdown` / `--write` 失败且不写文件。
+
 ## 0.27 — brief + handoff（2026-09-07）
 
 - `taskctl.py brief TASK-xxx --role worker|scout|verifier`：从 manifest + round.json 生成标准简报，供 M1 贴进真窗或子代理。

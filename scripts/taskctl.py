@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Minimal, dependency-free task gate for multi-window_M v0.27.
+"""Minimal, dependency-free task gate for multi-window_M v0.28.
 
 Core behavior is host-agnostic. verification_policy() is the only close-path
 table (gate / audit-round / transition). brief/handoff print copy-ready
-handoffs without changing state. G2 ignores role-owned .task files:
-manifest.json, rerun.json, and verify-report.json.
+handoffs without changing state. status --markdown renders docs views from
+.task/ only. G2 ignores role-owned .task files: manifest.json, rerun.json,
+and verify-report.json.
 """
 
 from __future__ import annotations
@@ -67,6 +68,8 @@ ROOT_PLACEMENT_ERROR = (
     "  correct: py -3 taskctl.py --root <project> <command> ...\n"
     "  wrong:   py -3 taskctl.py <command> ... --root <project>"
 )
+GENERATED_STATUS_REL = "docs/TASK-STATUS.md"
+GENERATED_STATUS_MARKER = "<!-- taskctl:generated-status; do not edit -->"
 HOOK_LOG_MAX_LINES = 100
 RERUN_TIMEOUT_SEC = 60
 SOURCE_HOST = {
@@ -938,14 +941,14 @@ def cmd_migrate_project(args: argparse.Namespace, root: Path) -> int:
     destination = safe_destination(root, args.destination)
     source = Path(__file__).resolve()
     if destination == source:
-        print("FAIL: destination is the currently running v0.27 script")
+        print("FAIL: destination is the currently running v0.28 script")
         return 1
     if destination.exists() and not args.force:
         print(f"FAIL: destination exists; add --force to replace: {destination.relative_to(root)}")
         return 1
     destination.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(source, destination)
-    print(f"MIGRATED {destination.relative_to(root)} from multi-window_M v0.27")
+    print(f"MIGRATED {destination.relative_to(root)} from multi-window_M v0.28")
     return 0
 
 
@@ -966,14 +969,7 @@ def load_task_statuses(root: Path) -> Dict[str, str]:
 
 
 def window_task_annotation(window: str, round_data: Dict[str, Any], statuses: Dict[str, str]) -> str:
-    raw_tasks = round_data.get("tasks", {})
-    assigned: List[str] = []
-    if isinstance(raw_tasks, dict):
-        value = raw_tasks.get(window, [])
-        if isinstance(value, list):
-            assigned = [str(item) for item in value]
-        elif isinstance(value, str) and value:
-            assigned = [value]
+    assigned = tasks_for_window(round_data, window)
     if not assigned:
         return "tasks=-"
     parts = [f"{task_id}:{statuses.get(task_id, 'MISSING')}" for task_id in assigned]
@@ -983,9 +979,166 @@ def window_task_annotation(window: str, round_data: Dict[str, Any], statuses: Di
     return note
 
 
-def cmd_status(root: Path) -> int:
+def tasks_for_window(round_data: Dict[str, Any], window: str) -> List[str]:
+    raw_tasks = round_data.get("tasks", {})
+    if not isinstance(raw_tasks, dict):
+        return []
+    value = raw_tasks.get(window, [])
+    if isinstance(value, list):
+        return [str(item) for item in value if item]
+    if isinstance(value, str) and value:
+        return [value]
+    return []
+
+
+def generated_status_path(root: Path) -> Path:
+    return root / GENERATED_STATUS_REL
+
+
+def load_manifest_map(root: Path) -> Dict[str, Dict[str, Any]]:
+    mapping: Dict[str, Dict[str, Any]] = {}
+    for directory in sorted(task_root(root).glob("TASK-*")):
+        manifest_file = directory / "manifest.json"
+        if not manifest_file.exists():
+            mapping[directory.name] = {"task_id": directory.name, "status": "MISSING", "owner": "-", "attempt": 0, "title": ""}
+            continue
+        try:
+            manifest = read_json(manifest_file)
+        except ValueError:
+            mapping[directory.name] = {"task_id": directory.name, "status": "INVALID", "owner": "-", "attempt": 0, "title": ""}
+            continue
+        task_id = str(manifest.get("task_id", directory.name))
+        mapping[task_id] = manifest
+    return mapping
+
+
+def render_status_markdown(root: Path) -> str:
+    statuses = load_task_statuses(root)
+    manifests = load_manifest_map(root)
+    round_file = round_path(root)
+    round_data: Optional[Dict[str, Any]] = None
+    if round_file.exists():
+        round_data = read_json(round_file)
+    lines = [
+        GENERATED_STATUS_MARKER,
+        "# 任务状态视图",
+        "",
+        f"生成时间：{now_iso()}",
+        "权威存储：`.task/`（`manifest.json` + `round.json`）。",
+        "**禁止手改本文件。** 更新请重新运行 `taskctl.py status --markdown --write`。",
+        "Registry / RECEIPT-LOG 里的 pending/done 若与本表不一致，**以本表为准**。",
+        "",
+    ]
+    if round_data is None:
+        lines.extend(["## 本轮", "", "- 无 round.json", ""])
+        windows: List[str] = []
+        receipts: List[str] = []
+        window_status: Dict[str, Any] = {}
+    else:
+        windows = [str(item) for item in (round_data.get("expected_windows") or [])]
+        receipts = [str(item) for item in (round_data.get("receipts") or [])]
+        raw_ws = round_data.get("window_status")
+        window_status = raw_ws if isinstance(raw_ws, dict) else {}
+        lines.extend(
+            [
+                "## 本轮",
+                "",
+                f"- round_id: {round_data.get('round_id') or '?'}",
+                f"- 本轮窗口: {', '.join(windows) or '(none)'}",
+                f"- receipts: {', '.join(receipts) or '(none)'}",
+                f"- check_requested: {round_data.get('check_requested', False)}",
+                "",
+            ]
+        )
+    lines.extend(
+        [
+            "## 窗口 / 任务状态表",
+            "",
+            "| 窗号 | 窗口状态 | receipt | 任务 | 任务状态 | 说明 |",
+            "|------|----------|---------|------|----------|------|",
+        ]
+    )
+    listed_tasks: List[str] = []
+    if windows:
+        for window in windows:
+            assigned = tasks_for_window(round_data or {}, window)
+            receipt = "yes" if window in receipts else "no"
+            win_state = str(window_status.get(window, "MISSING"))
+            if not assigned:
+                lines.append(f"| {window} | {win_state} | {receipt} | — | — | 未绑定任务 |")
+                continue
+            for task_id in assigned:
+                listed_tasks.append(task_id)
+                task_state = statuses.get(task_id, "MISSING")
+                note = "tasks_closed" if task_state == "done" else ""
+                lines.append(
+                    f"| {window} | {win_state} | {receipt} | {task_id} | {task_state} | {note} |"
+                )
+    else:
+        lines.append("| — | — | — | — | — | 无本轮窗口 |")
+    lines.extend(["", "## RECEIPT 摘要", ""])
+    if not windows:
+        lines.append("无 round.json，无法列出 receipt。")
+    else:
+        lines.extend(
+            [
+                "| 窗号 | 已 receipt | 窗口状态 | 对应任务终态 |",
+                "|------|------------|----------|--------------|",
+            ]
+        )
+        for window in windows:
+            assigned = tasks_for_window(round_data or {}, window)
+            task_col = ", ".join(
+                f"{task_id}:{statuses.get(task_id, 'MISSING')}" for task_id in assigned
+            ) or "—"
+            lines.append(
+                f"| {window} | {'yes' if window in receipts else 'no'} | "
+                f"{window_status.get(window, 'MISSING')} | {task_col} |"
+            )
+    lines.extend(["", "## 全部任务", ""])
+    if not manifests:
+        lines.append("- 无 TASK-*")
+    else:
+        lines.extend(
+            [
+                "| 任务 | owner | 标题 | 状态 | attempt |",
+                "|------|-------|------|------|---------|",
+            ]
+        )
+        for task_id, manifest in manifests.items():
+            lines.append(
+                f"| {task_id} | {manifest.get('owner', '-')} | "
+                f"{manifest.get('title') or '—'} | {manifest.get('status', 'pending')} | "
+                f"{manifest.get('attempt', 0)} |"
+            )
+    unlisted = [task_id for task_id in manifests if task_id not in listed_tasks]
+    if unlisted:
+        lines.extend(["", "未列入本轮但存在的任务：" + ", ".join(unlisted)])
+    lines.append("")
+    return "\n".join(lines) + "\n"
+
+
+def cmd_status(root: Path, markdown: bool = False, write: bool = False) -> int:
+    if write:
+        markdown = True
     if not task_root(root).is_dir():
+        if markdown:
+            print("STATUS_FAIL: no .task")
+            return 1
         print("STATUS SKIP (no .task)")
+        return 0
+    if markdown:
+        try:
+            text = render_status_markdown(root)
+        except ValueError as exc:
+            print(f"STATUS FAIL: {exc}")
+            return 1
+        print(text, end="")
+        if write:
+            path = generated_status_path(root)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text, encoding="utf-8")
+            print(f"STATUS_WRITTEN {GENERATED_STATUS_REL}")
         return 0
     statuses = load_task_statuses(root)
     round_file = round_path(root)
@@ -1459,7 +1612,7 @@ def root_after_subcommand(tokens: List[str]) -> bool:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="multi-window_M v0.27 task gate",
+        description="multi-window_M v0.28 task gate",
         epilog="Place --root before the subcommand: taskctl.py --root <dir> status",
     )
     parser.add_argument(
@@ -1500,10 +1653,20 @@ def build_parser() -> argparse.ArgumentParser:
     hook = sub.add_parser("hook-audit", help="record a Stop-hook run and audit the current round")
     hook.add_argument("--source", choices=["manual", "codex-stop", "cursor-stop", "zcode-stop"], default="manual")
     hook.add_argument("--host", choices=["cursor", "codex", "zcode", "manual"])
-    migrate = sub.add_parser("migrate-project", help="copy this v0.27 taskctl into the project")
+    migrate = sub.add_parser("migrate-project", help="copy this v0.28 taskctl into the project")
     migrate.add_argument("--destination", default="scripts/taskctl.py")
     migrate.add_argument("--force", action="store_true", help="replace an existing destination")
-    sub.add_parser("status", help="show window and task states")
+    status_parser = sub.add_parser("status", help="show window and task states")
+    status_parser.add_argument(
+        "--markdown",
+        action="store_true",
+        help="render Registry status table and RECEIPT summary from .task/",
+    )
+    status_parser.add_argument(
+        "--write",
+        action="store_true",
+        help="write docs/TASK-STATUS.md (implies --markdown); do not hand-edit that file",
+    )
 
     transition = sub.add_parser("transition", help="change a task status through the controlled state machine")
     transition.add_argument("task_id")
@@ -1549,7 +1712,11 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         if args.command == "migrate-project":
             return cmd_migrate_project(args, root)
         if args.command == "status":
-            return cmd_status(root)
+            return cmd_status(
+                root,
+                markdown=bool(getattr(args, "markdown", False)),
+                write=bool(getattr(args, "write", False)),
+            )
         if args.command == "transition":
             return cmd_transition(args, root)
         if args.command == "reopen":

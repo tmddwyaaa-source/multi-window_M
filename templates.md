@@ -9,9 +9,10 @@
 ```markdown
 # 模块注册表（Module Registry）
 
-> **主导窗口 M1** 维护。查收 / 打回只用窗号（M2～M10 或 C1…）。
+> **主导窗口 M1** 维护路径与交付物。查收 / 打回只用窗号（M2～M10 或 C1…）。
 > 常驻仅 M1～M10。临时 C 一轮最多 4 个，done 后关闭、号码可复用。
 > 禁止新开 M11+，禁止 CB1 当窗号。
+> **状态禁止手写。** 运行 `py -3 scripts/taskctl.py --root <项目根> status --markdown --write`，以 `docs/TASK-STATUS.md` 为准。
 
 ## 本轮派工
 - 本轮窗口：M4、C1、C2
@@ -20,11 +21,13 @@
 
 ## 总览
 
-| 编号 | 模块名 | 产出文件 | 负责窗口 | 状态 | 依赖 |
-|------|--------|----------|----------|------|------|
-| M1 | 主导 / 架构协调 | — | **本窗口** | in_progress | — |
-| M4 | 背单词 | — | M4 | pending | M3 |
-| C1 | 词库批次 | `data/words-batch/CB2.json` | C1 | pending | M1 |
+状态列不要在本表手改。生成表：`docs/TASK-STATUS.md`。
+
+| 编号 | 模块名 | 产出文件 | 负责窗口 | 依赖 |
+|------|--------|----------|----------|------|
+| M1 | 主导 / 架构协调 | — | **本窗口** | — |
+| M4 | 背单词 | — | M4 | M3 |
+| C1 | 词库批次 | `data/words-batch/CB2.json` | C1 | M1 |
 
 ## C1 — 词库批次
 
@@ -42,7 +45,7 @@
 
 **开工话术**：`我是 C1 窗口，请读 MODULE-REGISTRY.md 中【C1】章节。按斥候→主力→搜剿执行。只改规定路径。必须贴终端输出原文。不要打开网页预览。`
 
-**状态**：`pending`
+**状态**：见 `docs/TASK-STATUS.md`（禁止在本章手写 pending/done）
 ```
 
 常驻章节标题：`## M4 — 背单词`。临时：`## C1 — 词库批次`。不要写成 `## CB2`。
@@ -83,12 +86,13 @@
 
 ```text
 py -3 scripts/taskctl.py --root <项目根> handoff
+py -3 scripts/taskctl.py --root <项目根> status --markdown --write
 ```
 
-把终端输出当接班唯一状态源。然后再：
+把 `handoff` 与 `docs/TASK-STATUS.md` 当接班状态源。然后再：
 
 ```text
-/multi-window_M-0.27
+/multi-window_M-0.28
 我是 M1。已阅读 handoff 生成物。按未闭环项继续；查收仍须本窗重跑；M1 唯一收口。
 不要报加分（除非本窗已确认并点名）。不要手写转述代替 brief。
 ```
@@ -134,7 +138,7 @@ py -3 scripts/taskctl.py --root <项目根> brief TASK-001 --role verifier
 ### 斥候
 
 ```text
-/multi-window_M-0.27
+/multi-window_M-0.28
 我是 {窗号}。当前角色：斥候（只调查，禁止改任何文件）。
 请读 {项目路径}/docs/MODULE-REGISTRY.md 中【{窗号}】章节。
 主题：{一句话}
@@ -153,7 +157,7 @@ py -3 scripts/taskctl.py --root <项目根> brief TASK-001 --role verifier
 ### 主力
 
 ```text
-/multi-window_M-0.27
+/multi-window_M-0.28
 我是 {窗号}。当前角色：主力（只实现，最小改动）。
 请读 Registry 中【{窗号}】章节。依据斥候报告（若有则以下为准）：
 ---
@@ -174,7 +178,7 @@ py -3 scripts/taskctl.py --root <项目根> brief TASK-001 --role verifier
 ### 搜剿 — 子窗口自检
 
 ```text
-/multi-window_M-0.27
+/multi-window_M-0.28
 我是 {窗号}。当前角色：搜剿（禁止修改实现代码）。
 卡点签名：{现象 + 位置/测试}
 本轮循环计数：{k}/4
@@ -194,7 +198,7 @@ py -3 scripts/taskctl.py --root <项目根> brief TASK-001 --role verifier
 ### M1 最终查收
 
 ```text
-/multi-window_M-0.27
+/multi-window_M-0.28
 我是 M1。当前角色：搜剿（只验收，禁止顺手改子模块来“修完”）。
 用户汇报：{窗号} 已完成，请查收。（或：所有窗口已完成 = 只核本轮派工名单）
 
@@ -272,7 +276,7 @@ py -3 scripts/taskctl.py --root <项目根> brief TASK-001 --role verifier
 | 终端输出（含一行 RESULT PASS 且命令本就一行） | ✅ / ❌ |
 | Registry 交付物 | ✅ / ❌ |
 
-**结论**：`内容通过` / `整轮未齐` / `done` / `review` / `blocked` / `fail`
+**结论**：本窗重跑结果写在这里；**是否 done 以 `docs/TASK-STATUS.md` 与 `transition` 为准**，不要在本文件手写一套与 `.task/` 不同的 pending/done。
 **阻塞项**：…
 ```
 
@@ -304,8 +308,9 @@ D:\gongju\{工具名}-{版本号}/
 
 | 文档 | 用途 |
 |------|------|
-| docs/MODULE-REGISTRY.md | 模块清单与状态 |
-| docs/RECEIPT-LOG.md | 查收记录 |
+| docs/MODULE-REGISTRY.md | 模块清单（路径/交付物；不要手写状态列） |
+| docs/TASK-STATUS.md | 由 `status --markdown --write` 生成的状态表，禁止手改 |
+| docs/RECEIPT-LOG.md | 查收叙事（结论以 TASK-STATUS / transition 为准） |
 | docs/FIX-PLAN.md | Phase 2 修复分工 |
 | docs/BLOCKERS/ | 卡点升级报告（达 4 次上限） |
 
