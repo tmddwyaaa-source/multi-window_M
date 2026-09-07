@@ -1,33 +1,37 @@
 ---
-name: multi-window_M-0.26
+name: multi-window_M-0.27
 description: >-
   多窗口分工：常驻仅 M1～M10；短期任务用临时窗 C1、C2（一轮最多 4 个）。
   禁止 M11+、禁止 CB1 当窗号。json 文件名 CB2 只给脚本认。
   默认不说加分；仅本窗已确认额外能力时才点名加分。
   可用宿主已有子代理减少传话，不新增角色窗；M1 唯一收口。
+  派工用 taskctl brief，接班用 taskctl handoff，不要手写转述。
   查收以本窗重跑为准；证据可重跑；Hook 记 run_id/宿主/起止。
   规则只描述当前行为；门禁细节见 references/task-gate.md。
   斥候→主力→搜剿；卡点最多 4 次。
   在用户提到多窗口、M1、C1、查收、模块注册表、斥候/主力/搜剿时使用。
-version: "0.26"
+version: "0.27"
 disable-model-invocation: true
 ---
 
-# Multi-Window_M-0.26（常驻 M1～M10，临时 Cn）
+# Multi-Window_M-0.27（常驻 M1～M10，临时 Cn）
 
-本文件夹名带版本号，是升级系列的隔离副本；`version` 字段也是 0.26。调用：`/multi-window_M-0.26`。历史版本说明见 [CHANGELOG.md](CHANGELOG.md)，不得当作当前规则。
+本文件夹名带版本号，是升级系列的隔离副本；`version` 字段也是 0.27。调用：`/multi-window_M-0.27`。历史版本说明见 [CHANGELOG.md](CHANGELOG.md)，不得当作当前规则。
 
 复制即用话术见 [templates.md](templates.md)。G0～G3、manifest schema、`transition` 表见 [references/task-gate.md](references/task-gate.md)。宿主 Hook 接线只允许写在 [references/hooks.md](references/hooks.md)。
 
 ## 本版唯一问题与成功标准
 
-**问题：** 说明书按 0.22～0.25 分层堆叠，Agent 可能引用过期块；策略表虽已进脚本，但缺少「冲突必拒绝」的专项覆盖。
+**问题：** M1 派工和新 M1 接班依赖手写转述，容易漏 `allowed_paths`、R 项和验收命令。
 
 **成功标准：**
 
-- SKILL.md 只描述当前规则；同一任务任何时刻只有一条由 `verification_policy()` 决定的合法收口路径。
-- Gate、`audit-round`、`transition`、M1 收口共用该函数；冲突输出 `POLICY_CONFLICT` 并有测试。
-- 窗口状态轴（`round.json`）与任务状态轴（`manifest.json`）分离；不要把 `M2 verified` 当成任务完成。
+- `taskctl.py brief TASK-xxx --role worker|scout|verifier` 从 manifest + round.json 生成标准简报（模块摘要、allowed_paths、R 项与 verify 命令、硬规则、报告格式）。M1 把生成物贴进真窗或子代理即可。
+- `taskctl.py handoff` 输出 M1 接班简报（任务状态、attempt、未闭环、BLOCKERS、hook-runs 摘要、下一步建议）。
+- 任何宿主的工人 / 新 M1 **只凭生成物即可完整执行**，不依赖 M1 手写转述。
+- 负向：不存在的 task、非法 `--role` 必须拒绝。`brief` / `handoff` **不改状态、不派工、不标 done**。
+
+0.26 的规则收敛与 `POLICY_CONFLICT` 仍是当前规则，见下文「任务控制」。本版不改状态机、Hook 三不、窗号或证据格式。
 
 ## 核心认知（三条铁规则）
 
@@ -60,7 +64,7 @@ disable-model-invocation: true
 
 **出句（硬性，只约束 M1）：** 只有判定为加分才准贴加分句。默认禁止说加分。不确定则前 3 轮内只问、禁止先报加分；未确认前按默认。前 3 轮没点名 → 本窗全程按默认。句式见 templates.md（加分句不是默认开场）。
 
-**默认流程（所有宿主的起点）：** M1 派工写 Registry → **用户**开 M/C 窗并说「我是 {窗号}」→ 工人改文件并**自己在本窗终端跑验收命令** → **用户**对 M1 说「{窗号} 已完成，请查收」→ M1 **再跑同一条命令**。失败则 M1 打回，**用户**再到该工人窗说「按打回项继续」。没有「跑完自动交 M1」「失败自动重开」这一跳。
+**默认流程（所有宿主的起点）：** M1 派工写 Registry 与 manifest → 跑 `brief` 把生成物交给工人 → **用户**开 M/C 窗并说「我是 {窗号}」→ 工人按简报改文件并**自己在本窗终端跑验收命令** → **用户**对 M1 说「{窗号} 已完成，请查收」→ M1 **再跑同一条命令**。失败则 M1 打回，**用户**再到该工人窗说「按打回项继续」。没有「跑完自动交 M1」「失败自动重开」这一跳。新 M1 先跑 `handoff`，不要凭聊天记忆接班。
 
 ## 窗口角色（空间）
 
@@ -117,6 +121,8 @@ disable-model-invocation: true
 - Full Gate 会重跑可识别的验收命令、核 evidence 路径、有 Git 时核工作区。`manifest.json` / `rerun.json` / `verify-report.json` 不必列入工人 `changed_files`。
 - `--root` 必须放在子命令前面。常用命令与 schema 见 `references/task-gate.md`。
 - 一键自检（不依赖写死的本机路径）：`py -3 scripts/taskctl.py selftest`。
+- **派工简报：** `py -3 scripts/taskctl.py --root <项目根> brief TASK-xxx --role worker|scout|verifier`。M1 把终端输出原文贴给该窗或子代理，不要手写转述代替生成物。
+- **接班简报：** `py -3 scripts/taskctl.py --root <项目根> handoff`。新 M1 先跑这一条再动手。不存在的 task 或非法 `--role` 会被拒绝。
 
 旧项目升级：用**已安装的本技能脚本**执行 `migrate-project --destination scripts/taskctl.py --force`，再跑门禁。
 
@@ -198,3 +204,4 @@ M1 定标准 → 常驻骨架模块先过查收 → 其余常驻 M 可并行；�
 - 子窗口自行标 done；没跑终端只编 PASS；子窗口打开网页预览
 - M1 未经点名、未经同意就亲自改子模块
 - 低风险短路径与独立验收两条路同时走，或忽略 `POLICY_CONFLICT` 继续收口
+- 派工时手写转述代替 `brief` 生成物，或新 M1 不跑 `handoff` 凭记忆接班

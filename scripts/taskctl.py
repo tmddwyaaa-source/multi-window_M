@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Minimal, dependency-free task gate for multi-window_M v0.26.
+"""Minimal, dependency-free task gate for multi-window_M v0.27.
 
 Core behavior is host-agnostic. verification_policy() is the only close-path
-table (gate / audit-round / transition). G2 ignores role-owned .task files:
+table (gate / audit-round / transition). brief/handoff print copy-ready
+handoffs without changing state. G2 ignores role-owned .task files:
 manifest.json, rerun.json, and verify-report.json.
 """
 
@@ -57,7 +58,10 @@ KNOWN_COMMANDS = {
     "transition",
     "reopen",
     "selftest",
+    "brief",
+    "handoff",
 }
+BRIEF_ROLES = {"worker", "scout", "verifier"}
 ROOT_PLACEMENT_ERROR = (
     "FAIL: --root must come before the subcommand\n"
     "  correct: py -3 taskctl.py --root <project> <command> ...\n"
@@ -934,14 +938,14 @@ def cmd_migrate_project(args: argparse.Namespace, root: Path) -> int:
     destination = safe_destination(root, args.destination)
     source = Path(__file__).resolve()
     if destination == source:
-        print("FAIL: destination is the currently running v0.26 script")
+        print("FAIL: destination is the currently running v0.27 script")
         return 1
     if destination.exists() and not args.force:
         print(f"FAIL: destination exists; add --force to replace: {destination.relative_to(root)}")
         return 1
     destination.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(source, destination)
-    print(f"MIGRATED {destination.relative_to(root)} from multi-window_M v0.26")
+    print(f"MIGRATED {destination.relative_to(root)} from multi-window_M v0.27")
     return 0
 
 
@@ -1116,6 +1120,299 @@ def cmd_reopen(args: argparse.Namespace, root: Path) -> int:
     return 0
 
 
+def load_round(root: Path) -> Optional[Dict[str, Any]]:
+    path = round_path(root)
+    if not path.exists():
+        return None
+    return read_json(path)
+
+
+def window_for_task(round_data: Optional[Dict[str, Any]], task_id: str, owner: str) -> str:
+    if isinstance(round_data, dict):
+        tasks = round_data.get("tasks", {})
+        if isinstance(tasks, dict):
+            for window, values in tasks.items():
+                ids = values if isinstance(values, list) else [values]
+                if task_id in {str(item) for item in ids if item}:
+                    return str(window)
+    return owner
+
+
+def close_path_label(policy: Dict[str, Any]) -> str:
+    if policy.get("conflict"):
+        return "POLICY_CONFLICT — do not dispatch or close"
+    if policy.get("independent_verification"):
+        return "独立验收 worker_done → verifying → verified → integrated → done"
+    return "短路径 worker_done → integrated → done（actor M1）"
+
+
+def format_requirements(manifest: Dict[str, Any]) -> List[str]:
+    lines: List[str] = []
+    for requirement in manifest.get("requirements", []):
+        if not isinstance(requirement, dict):
+            continue
+        req_id = str(requirement.get("id") or "?")
+        text = str(requirement.get("text") or "").strip() or "(no text)"
+        command = ""
+        if isinstance(requirement.get("verify_cmd"), str) and requirement["verify_cmd"].strip():
+            command = requirement["verify_cmd"].strip()
+        elif isinstance(requirement.get("verify"), str) and requirement["verify"].strip():
+            command = requirement["verify"].strip()
+        lines.append(f"- {req_id}: {text}")
+        if command:
+            lines.append(f"  verify: {command}")
+    return lines or ["- (none)"]
+
+
+def role_hard_rules(role: str, policy: Dict[str, Any]) -> List[str]:
+    shared = [
+        "- 只改 allowed_paths 内的文件；禁止打开网页预览",
+        "- 验收命令只检查已有文件，不负责生成业务文件",
+        "- 状态只用 taskctl transition，不要整份覆盖 manifest.json",
+        "- 不要自行标 done；M1 唯一收口",
+        f"- 收口路径：{close_path_label(policy)}",
+    ]
+    if role == "scout":
+        return [
+            "- 当前角色：斥候。只读调查，列路径与可疑点，建议最小范围",
+            "- 禁止改代码、禁止声称已修好、禁止改 Registry 为 done",
+        ] + shared
+    if role == "verifier":
+        return [
+            "- 当前角色：搜剿 / 独立验收。只读实现，禁止修改 src 与工人文件",
+            "- reviewer 窗口不得等于工人窗；写 verify-report.json",
+            "- 工人没跑终端或缺证据则 fail，不要凭感觉放行",
+        ] + shared
+    return [
+        "- 当前角色：主力。最小改动实现；本窗跑验收命令并贴终端原文",
+        "- 结束时写 worker-report.json：covered_requirements、evidence.path、changed_files、tests",
+        "- changed_files 不要报 manifest.json / rerun.json / verify-report.json",
+        "- 工人跑完不会自动交给 M1；须用户传「{窗号} 已完成，请查收」",
+    ] + shared
+
+
+def role_report_format(role: str) -> List[str]:
+    if role == "scout":
+        return [
+            "- 只交斥候报告：路径、可疑点、建议最小范围。不要写 worker-report.json 当完工",
+        ]
+    if role == "verifier":
+        return [
+            "- 写 .task/TASK-xxx/verify-report.json：reviewer、result、checked_requirements、missing",
+            "- 然后：transition TASK-xxx verifying --actor verifier；verified --actor verifier",
+        ]
+    return [
+        "- 写 .task/TASK-xxx/worker-report.json，然后：transition TASK-xxx worker_done --actor worker",
+    ]
+
+
+def cmd_brief(args: argparse.Namespace, root: Path) -> int:
+    role = str(args.role or "").strip().lower()
+    if role not in BRIEF_ROLES:
+        print("BRIEF_FAIL: illegal role; use worker|scout|verifier")
+        return 1
+    try:
+        require_task_id(args.task_id)
+    except ValueError as exc:
+        print(f"BRIEF_FAIL: {exc}")
+        return 1
+    manifest, errors = load_manifest(root, args.task_id)
+    if manifest is None:
+        print(f"BRIEF_FAIL: missing task {args.task_id}")
+        for error in errors:
+            print(f"- {error}")
+        return 1
+    try:
+        round_data = load_round(root)
+    except ValueError as exc:
+        print(f"BRIEF_FAIL: {exc}")
+        return 1
+    policy = verification_policy(manifest)
+    owner = str(manifest.get("owner") or "")
+    window = window_for_task(round_data, args.task_id, owner)
+    allowed = manifest.get("allowed_paths")
+    allowed_lines = (
+        [f"- {item}" for item in allowed]
+        if isinstance(allowed, list) and allowed
+        else ["- (empty — fill before dispatch)"]
+    )
+    print(f"BRIEF {args.task_id} role={role}")
+    print(f"# 任务简报 — {args.task_id} / {role}")
+    print()
+    print(f"- 窗号: {window or '(unassigned)'}")
+    print(f"- 标题: {manifest.get('title') or '(none)'}")
+    print(f"- owner: {owner or '(none)'}")
+    print(f"- 任务状态: {manifest.get('status', 'pending')}")
+    print(f"- risk: {policy['risk']}")
+    print(f"- attempt: {policy['attempt']}")
+    print(f"- 收口路径: {close_path_label(policy)}")
+    if policy.get("conflict"):
+        print(f"- POLICY_CONFLICT: {policy['conflict']}")
+    print()
+    print("## allowed_paths")
+    print("\n".join(allowed_lines))
+    print()
+    print("## R 项与验收")
+    print("\n".join(format_requirements(manifest)))
+    print()
+    print("## 硬规则")
+    print("\n".join(role_hard_rules(role, policy)))
+    print()
+    print("## 报告格式")
+    print("\n".join(role_report_format(role)))
+    print()
+    print("## 开工句")
+    print(f"我是 {window or '{窗号}'} 窗口。只按本简报执行。不要打开网页预览。")
+    return 0
+
+
+def summarize_hook_runs(root: Path) -> List[str]:
+    path = hook_log_path(root)
+    if not path.exists():
+        return ["- 无 hook-runs.jsonl（不要把缺日志当成完成证据）"]
+    rows = [line for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    if not rows:
+        return ["- hook-runs.jsonl 为空"]
+    recent = rows[-6:]
+    lines = [f"- 共 {len(rows)} 行（最多 100）；最近 {len(recent)} 行："]
+    for raw in recent:
+        try:
+            entry = json.loads(raw)
+        except json.JSONDecodeError:
+            lines.append(f"  - (invalid json) {raw[:80]}")
+            continue
+        lines.append(
+            "  - "
+            f"phase={entry.get('phase')} host={entry.get('host')} "
+            f"source={entry.get('source')} result={entry.get('audit_result')} "
+            f"run_id={entry.get('run_id')}"
+        )
+    return lines
+
+
+def list_blocker_files(root: Path) -> List[str]:
+    directory = root / "docs" / "BLOCKERS"
+    if not directory.is_dir():
+        return []
+    return sorted(
+        str(path.relative_to(root)).replace("\\", "/")
+        for path in directory.iterdir()
+        if path.is_file() and path.suffix.lower() in {".md", ".txt"}
+    )
+
+
+def next_step_for_task(manifest: Dict[str, Any], policy: Dict[str, Any]) -> str:
+    status = str(manifest.get("status", "pending"))
+    if policy.get("conflict"):
+        return "停止收口，修复 POLICY_CONFLICT"
+    if status == "pending":
+        return "transition in_progress --actor M1，再派工人"
+    if status == "in_progress":
+        return "工人改文件、本窗跑验收、transition worker_done --actor worker"
+    if status == "worker_done":
+        if policy.get("independent_verification"):
+            return "派独立验收窗 verifying → verified，禁止 worker_done → integrated"
+        return "M1 本窗重跑 Full Gate 后 integrated → done"
+    if status == "verifying":
+        return "verifier 写 verify-report 后 transition verified --actor verifier"
+    if status == "verified":
+        return "M1 本窗重跑后 integrated → done"
+    if status == "integrated":
+        return "transition done --actor M1"
+    if status == "done":
+        return "已闭环；不要再改同一任务除非 reopen"
+    if status in {"paused", "blocked", "reopened"}:
+        return f"当前 {status}：由 M1 决定是否 in_progress 或保持阻塞"
+    return "对照策略表选择唯一合法下一跳"
+
+
+def cmd_handoff(root: Path) -> int:
+    if not task_root(root).is_dir():
+        print("HANDOFF_FAIL: no .task")
+        return 1
+    try:
+        round_data = load_round(root)
+    except ValueError as exc:
+        print(f"HANDOFF_FAIL: {exc}")
+        return 1
+    print("HANDOFF")
+    print("# M1 接班简报")
+    print()
+    print("只读生成物。不要手写转述替代本简报。查收仍须本窗重跑；M1 唯一收口。")
+    print()
+    if round_data is None:
+        print("## 本轮")
+        print("- 无 round.json")
+    else:
+        print("## 本轮")
+        print(f"- round_id: {round_data.get('round_id') or '?'}")
+        windows = round_data.get("expected_windows") or []
+        print(f"- 本轮窗口: {', '.join(str(item) for item in windows) or '(none)'}")
+        receipts = round_data.get("receipts") or []
+        print(f"- receipts: {', '.join(str(item) for item in receipts) or '(none)'}")
+        print(f"- check_requested: {round_data.get('check_requested', False)}")
+        window_status = round_data.get("window_status")
+        if isinstance(window_status, dict):
+            for window in windows:
+                print(f"- WINDOW {window}: {window_status.get(window, 'MISSING')}")
+    print()
+    print("## 任务")
+    statuses = load_task_statuses(root)
+    if not statuses:
+        print("- 无 TASK-*")
+    open_items: List[str] = []
+    for directory in sorted(task_root(root).glob("TASK-*")):
+        manifest_file = directory / "manifest.json"
+        if not manifest_file.exists():
+            print(f"- {directory.name}: missing manifest.json")
+            open_items.append(f"{directory.name} missing manifest")
+            continue
+        try:
+            manifest = read_json(manifest_file)
+        except ValueError as exc:
+            print(f"- {directory.name}: invalid manifest ({exc})")
+            open_items.append(f"{directory.name} invalid manifest")
+            continue
+        task_id = str(manifest.get("task_id", directory.name))
+        policy = verification_policy(manifest)
+        step = next_step_for_task(manifest, policy)
+        print(
+            f"- {task_id}: status={manifest.get('status', 'pending')} "
+            f"owner={manifest.get('owner', '-')} risk={policy['risk']} "
+            f"attempt={policy['attempt']} path={close_path_label(policy)}"
+        )
+        print(f"  下一步: {step}")
+        if str(manifest.get("status", "pending")) != "done" or policy.get("conflict"):
+            open_items.append(f"{task_id}: {step}")
+    print()
+    print("## 未闭环")
+    if open_items:
+        for item in open_items:
+            print(f"- {item}")
+    else:
+        print("- 无（全部 done 且无 POLICY_CONFLICT）")
+    blockers = list_blocker_files(root)
+    print()
+    print("## BLOCKERS")
+    if blockers:
+        for path in blockers:
+            print(f"- {path}")
+    else:
+        print("- 无 docs/BLOCKERS 文件")
+    print()
+    print("## Hook")
+    print("\n".join(summarize_hook_runs(root)))
+    print()
+    print("## 建议")
+    if open_items:
+        print("- 先处理未闭环任务；生成 brief 再贴给工人/验收人，不要手写转述")
+        print("- 出现 POLICY_CONFLICT 则停止收口")
+    else:
+        print("- 本轮任务已闭环。新需求先 init + brief，不要只改聊天话术")
+    print("- 窗口状态 ≠ 任务完成；不要把 M/C verified 当成 TASK done")
+    return 0
+
+
 def cmd_selftest() -> int:
     """Run test_*.py beside this file so every host copy stays self-contained."""
     here = Path(__file__).resolve().parent
@@ -1126,11 +1423,14 @@ def cmd_selftest() -> int:
         print("SELFTEST FAIL: no test_*.py next to taskctl.py")
         return 1
     failed = 0
+    env = os.environ.copy()
+    env["PYTHONIOENCODING"] = "utf-8"
     for test in tests:
         print(f"SELFTEST RUN {test.name}")
         completed = subprocess.run(
             [sys.executable, str(test)],
             cwd=str(here),
+            env=env,
         )
         if completed.returncode != 0:
             failed += 1
@@ -1159,7 +1459,7 @@ def root_after_subcommand(tokens: List[str]) -> bool:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="multi-window_M v0.26 task gate",
+        description="multi-window_M v0.27 task gate",
         epilog="Place --root before the subcommand: taskctl.py --root <dir> status",
     )
     parser.add_argument(
@@ -1200,7 +1500,7 @@ def build_parser() -> argparse.ArgumentParser:
     hook = sub.add_parser("hook-audit", help="record a Stop-hook run and audit the current round")
     hook.add_argument("--source", choices=["manual", "codex-stop", "cursor-stop", "zcode-stop"], default="manual")
     hook.add_argument("--host", choices=["cursor", "codex", "zcode", "manual"])
-    migrate = sub.add_parser("migrate-project", help="copy this v0.26 taskctl into the project")
+    migrate = sub.add_parser("migrate-project", help="copy this v0.27 taskctl into the project")
     migrate.add_argument("--destination", default="scripts/taskctl.py")
     migrate.add_argument("--force", action="store_true", help="replace an existing destination")
     sub.add_parser("status", help="show window and task states")
@@ -1215,6 +1515,10 @@ def build_parser() -> argparse.ArgumentParser:
     reopen.add_argument("task_id")
     reopen.add_argument("--reason", required=True)
     reopen.add_argument("--actor", choices=["M1"], default="M1")
+    brief = sub.add_parser("brief", help="print a copy-ready task brief for a role")
+    brief.add_argument("task_id")
+    brief.add_argument("--role", required=True, help="worker, scout, or verifier")
+    sub.add_parser("handoff", help="print an M1 succession brief from .task/")
     sub.add_parser("selftest", help="run bundled tests next to this script")
     return parser
 
@@ -1250,6 +1554,10 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
             return cmd_transition(args, root)
         if args.command == "reopen":
             return cmd_reopen(args, root)
+        if args.command == "brief":
+            return cmd_brief(args, root)
+        if args.command == "handoff":
+            return cmd_handoff(root)
         if args.command == "selftest":
             return cmd_selftest()
     except ValueError as exc:

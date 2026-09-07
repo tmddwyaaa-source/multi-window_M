@@ -79,6 +79,8 @@ Registry / RECEIPT-LOG 是给人看的文档层，不能代替 manifest 状态�
 
 ```text
 py -3 scripts/taskctl.py selftest
+py -3 scripts/taskctl.py brief TASK-001 --role worker
+py -3 scripts/taskctl.py handoff
 py -3 scripts/taskctl.py init TASK-001
 py -3 scripts/taskctl.py gate TASK-001
 py -3 scripts/taskctl.py audit-round
@@ -92,6 +94,8 @@ py -3 scripts/taskctl.py transition TASK-001 done --actor M1
 py -3 scripts/taskctl.py transition TASK-001 verifying --actor verifier
 py -3 scripts/taskctl.py transition TASK-001 verified --actor verifier
 ```
+
+`brief` / `handoff` 只打印，不改 `.task/` 状态。`--role` 仅 `worker|scout|verifier`。缺失 task 或非法 role → `BRIEF_FAIL`。无 `.task/` → `HANDOFF_FAIL`。
 
 前四条 `transition` 是 **low 且 attempt < 2** 的短路径（M1 查收时本窗重跑 Full Gate 后再 `integrated`）。后两条仅在策略表要求独立验收时使用；medium/high 或 `attempt >= 2` **禁止** `worker_done → integrated`。
 

@@ -77,12 +77,43 @@
 当前环境是否已能关联其他对话，或已能把子代理结果收回本会话？能则本窗为加分（须点名）；不能或未确认则按默认，不要说加分。
 ```
 
+## M1 接班
+
+新 M1（或同一人换对话）先跑生成物，不要凭上一窗聊天记忆接班：
+
+```text
+py -3 scripts/taskctl.py --root <项目根> handoff
+```
+
+把终端输出当接班唯一状态源。然后再：
+
+```text
+/multi-window_M-0.27
+我是 M1。已阅读 handoff 生成物。按未闭环项继续；查收仍须本窗重跑；M1 唯一收口。
+不要报加分（除非本窗已确认并点名）。不要手写转述代替 brief。
+```
+
+## 派工：先 brief 再贴窗
+
+M1 写好 manifest / round 后，不要手写开工长文。生成简报并**原样**贴给工人或子代理：
+
+```text
+py -3 scripts/taskctl.py --root <项目根> brief TASK-001 --role worker
+py -3 scripts/taskctl.py --root <项目根> brief TASK-001 --role scout
+py -3 scripts/taskctl.py --root <项目根> brief TASK-001 --role verifier
+```
+
+`--role` 只能是 `worker` / `scout` / `verifier`。不存在的 task 或非法 role 会被拒绝。`brief` 与 `handoff` 不改状态。
+
+工人窗仍用下面的简版话术作身份句；任务细节以 brief 生成物为准。
+
 ## 子窗口简版话术
 
 **开工：**
 
 ```text
 我是 {窗号} 窗口，请读 {项目路径}/docs/MODULE-REGISTRY.md 中【{窗号}】章节。
+若用户贴了 taskctl brief 生成物，以简报为准（allowed_paths、R 项、验收命令）。
 按斥候 → 主力 → 搜剿执行；同一卡点最多 4 次。
 只改该模块规定路径，勿覆盖其他模块文件。
 必须用终端跑 Registry 验收命令，回复里贴命令 + 终端输出原文；没有原文不许说请查收。
@@ -103,7 +134,7 @@
 ### 斥候
 
 ```text
-/multi-window_M-0.26
+/multi-window_M-0.27
 我是 {窗号}。当前角色：斥候（只调查，禁止改任何文件）。
 请读 {项目路径}/docs/MODULE-REGISTRY.md 中【{窗号}】章节。
 主题：{一句话}
@@ -122,7 +153,7 @@
 ### 主力
 
 ```text
-/multi-window_M-0.26
+/multi-window_M-0.27
 我是 {窗号}。当前角色：主力（只实现，最小改动）。
 请读 Registry 中【{窗号}】章节。依据斥候报告（若有则以下为准）：
 ---
@@ -143,7 +174,7 @@
 ### 搜剿 — 子窗口自检
 
 ```text
-/multi-window_M-0.26
+/multi-window_M-0.27
 我是 {窗号}。当前角色：搜剿（禁止修改实现代码）。
 卡点签名：{现象 + 位置/测试}
 本轮循环计数：{k}/4
@@ -163,7 +194,7 @@
 ### M1 最终查收
 
 ```text
-/multi-window_M-0.26
+/multi-window_M-0.27
 我是 M1。当前角色：搜剿（只验收，禁止顺手改子模块来“修完”）。
 用户汇报：{窗号} 已完成，请查收。（或：所有窗口已完成 = 只核本轮派工名单）
 
@@ -381,6 +412,7 @@ D:\gongju\{工具名}-{版本号}/
 ```text
 本任务除原有 Registry 规则外，使用 .task/TASK-xxx/manifest.json 的 R 编号。
 只改 allowed_paths；结束时写 worker-report.json，逐条列出已覆盖的 R 编号、证据和已知遗漏。
+若开工消息含 taskctl brief 生成物，以简报为准。
 changed_files 只报你改的业务文件，不要报 manifest.json / rerun.json / verify-report.json。
 worker_done 不等于 verified，不要自行标 done 或只口头说 PASS。
 状态变更必须使用 taskctl.py transition，并填写正确 actor；不要直接编辑 manifest.status，不要整份覆盖 manifest.json。
