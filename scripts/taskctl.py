@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Minimal, dependency-free task gate for multi-window_M v0.29.
+"""Minimal, dependency-free task gate for multi-window_M v0.30.
 
 Core behavior is host-agnostic. verification_policy() is the only close-path
-table. source_refs maps original asks to R items; unmapped sources fail
-audit-round / Full Gate with REQUIREMENT_COVERAGE_FAIL.
+table. Gears are recorded on the round; fake high gear and missing host-stop
+hook evidence fail audit-round close. Hook still does not mutate status.
 """
 
 from __future__ import annotations
@@ -76,6 +76,10 @@ SOURCE_HOST = {
     "zcode-stop": "zcode",
     "manual": "manual",
 }
+STOP_HOOK_SOURCES = {"cursor-stop", "codex-stop", "zcode-stop"}
+GEAR_CAPABILITY = {"default", "bonus"}
+GEAR_COLLABORATION = {"P", "A"}
+SUBAGENT_ROLES = {"worker", "scout", "verifier"}
 COMMAND_PREFIXES = (
     "py ",
     "py.exe ",
@@ -362,6 +366,210 @@ def validate_round_source_coverage(root: Path, round_data: Dict[str, Any]) -> Li
             "REQUIREMENT_COVERAGE_FAIL: unmapped round sources: " + ", ".join(missing)
         )
     return errors
+
+
+def default_gears() -> Dict[str, Any]:
+    return {
+        "capability": "default",
+        "collaboration": "P",
+        "capability_confirmed": False,
+    }
+
+
+def parse_gears(round_data: Dict[str, Any]) -> Tuple[Dict[str, Any], List[str]]:
+    raw = round_data.get("gears")
+    if raw is None:
+        return default_gears(), []
+    if not isinstance(raw, dict):
+        return default_gears(), ["GEAR_VIOLATION: gears must be an object"]
+    gears = default_gears()
+    if "capability" in raw:
+        gears["capability"] = raw.get("capability")
+    if "collaboration" in raw:
+        gears["collaboration"] = raw.get("collaboration")
+    if "capability_confirmed" in raw:
+        gears["capability_confirmed"] = bool(raw.get("capability_confirmed"))
+    return gears, []
+
+
+def validate_gears(round_data: Dict[str, Any]) -> List[str]:
+    gears, errors = parse_gears(round_data)
+    errors = list(errors)
+    capability = gears.get("capability")
+    collaboration = gears.get("collaboration")
+    confirmed = bool(gears.get("capability_confirmed"))
+    if capability not in GEAR_CAPABILITY:
+        errors.append("GEAR_VIOLATION: capability must be default|bonus")
+    if collaboration not in GEAR_COLLABORATION:
+        errors.append("GEAR_VIOLATION: collaboration must be P|A")
+    if capability == "bonus" and not confirmed:
+        errors.append(
+            "GEAR_VIOLATION: bonus capability requires capability_confirmed=true"
+        )
+    if collaboration == "A" and not (capability == "bonus" and confirmed):
+        errors.append(
+            "GEAR_VIOLATION: collaboration A requires confirmed bonus capability"
+        )
+    return errors
+
+
+def format_gears_line(round_data: Dict[str, Any]) -> str:
+    gears, _errors = parse_gears(round_data)
+    confirmed = "yes" if gears.get("capability_confirmed") else "no"
+    hook = "yes" if round_data.get("hook_supervision") else "no"
+    return (
+        f"capability={gears.get('capability')} "
+        f"collaboration={gears.get('collaboration')} "
+        f"confirmed={confirmed} hook_supervision={hook}"
+    )
+
+
+def paths_overlap(left: str, right: str) -> bool:
+    a = normalized_path(left).rstrip("/")
+    b = normalized_path(right).rstrip("/")
+    if not a or not b:
+        return True
+    return a == b or a.startswith(b + "/") or b.startswith(a + "/")
+
+
+def validate_subagents(root: Path, round_data: Dict[str, Any]) -> List[str]:
+    raw = round_data.get("subagents")
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        return ["PARALLEL_FAIL: subagents must be a list when present"]
+    errors: List[str] = []
+    seen_run: List[str] = []
+    seen_slot: List[str] = []
+    worker_slots: set[str] = set()
+    verifier_slots: set[str] = set()
+    owned: List[Tuple[str, List[str]]] = []
+    for index, item in enumerate(raw, start=1):
+        prefix = f"PARALLEL_FAIL: subagents[{index}]"
+        if not isinstance(item, dict):
+            errors.append(f"{prefix} must be an object")
+            continue
+        run_id = item.get("run_id")
+        task_id = item.get("task_id")
+        window = item.get("window")
+        role = item.get("role")
+        allowed = item.get("allowed_paths")
+        if not isinstance(run_id, str) or not run_id.strip():
+            errors.append(f"{prefix} missing run_id")
+            continue
+        if run_id in seen_run:
+            errors.append(f"PARALLEL_FAIL: duplicate subagent run_id {run_id}")
+        seen_run.append(run_id)
+        if not isinstance(task_id, str) or not TASK_ID_RE.fullmatch(task_id):
+            errors.append(f"{prefix} missing task_id")
+            continue
+        if not valid_window(window):
+            errors.append(f"{prefix} window must be M1-M10 or Cn")
+            continue
+        if role not in SUBAGENT_ROLES:
+            errors.append(f"{prefix} role must be worker|scout|verifier")
+            continue
+        if not isinstance(allowed, list) or not allowed:
+            errors.append(f"{prefix} allowed_paths must be a non-empty list")
+            continue
+        slot = f"{task_id}/{window}/{role}"
+        if slot in seen_slot:
+            errors.append(f"PARALLEL_FAIL: duplicate subagent {slot}")
+        seen_slot.append(slot)
+        if role == "worker":
+            worker_slots.add(f"{task_id}/{window}")
+        if role == "verifier":
+            verifier_slots.add(f"{task_id}/{window}")
+        manifest, load_errors = load_manifest(root, task_id)
+        if manifest is None:
+            errors.extend(f"PARALLEL_FAIL: {msg}" for msg in load_errors)
+            continue
+        task_allowed = manifest.get("allowed_paths")
+        if not isinstance(task_allowed, list):
+            task_allowed = []
+        agent_paths: List[str] = []
+        for path in allowed:
+            if not isinstance(path, str) or not path.strip():
+                errors.append(f"{prefix} allowed_paths must contain non-empty strings")
+                continue
+            agent_paths.append(normalized_path(path))
+            if not path_allowed(path, task_allowed):
+                errors.append(
+                    f"PARALLEL_FAIL: {run_id} path {normalized_path(path)} "
+                    f"outside {task_id} allowed_paths"
+                )
+        owned.append((run_id, agent_paths))
+    both = sorted(worker_slots & verifier_slots)
+    if both:
+        errors.append(
+            "PARALLEL_FAIL: worker cannot also be verifier: " + ", ".join(both)
+        )
+    for index, (left_id, left_paths) in enumerate(owned):
+        for right_id, right_paths in owned[index + 1 :]:
+            if left_id == right_id:
+                continue
+            for left in left_paths:
+                if any(paths_overlap(left, right) for right in right_paths):
+                    errors.append(
+                        f"PARALLEL_FAIL: concurrent paths {left_id} and {right_id}"
+                    )
+                    break
+    return errors
+
+
+def load_hook_entries(root: Path) -> List[Dict[str, Any]]:
+    path = hook_log_path(root)
+    if not path.exists():
+        return []
+    entries: List[Dict[str, Any]] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            item = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(item, dict):
+            entries.append(item)
+    return entries
+
+
+def complete_stop_pairs(entries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    grouped: Dict[str, Dict[str, Dict[str, Any]]] = {}
+    for item in entries:
+        run_id = str(item.get("run_id") or "")
+        phase = str(item.get("phase") or "")
+        if not run_id or phase not in {"start", "end"}:
+            continue
+        grouped.setdefault(run_id, {})[phase] = item
+    return [
+        pair["end"]
+        for pair in grouped.values()
+        if "start" in pair and "end" in pair
+    ]
+
+
+def validate_hook_evidence(root: Path, round_data: Dict[str, Any]) -> List[str]:
+    if not round_data.get("hook_supervision"):
+        return []
+    entries = load_hook_entries(root)
+    ends = complete_stop_pairs(entries)
+    host_ends = [
+        item for item in ends if str(item.get("source") or "") in STOP_HOOK_SOURCES
+    ]
+    if host_ends:
+        return []
+    if not hook_log_path(root).exists() or not entries:
+        return [
+            "HOOK_EVIDENCE_MISSING: hook_supervision=true but no hook-runs.jsonl"
+        ]
+    if ends and all(str(item.get("source") or "") == "manual" for item in ends):
+        return [
+            "HOOK_EVIDENCE_MISSING: manual audit-round/hook-audit is not hook evidence"
+        ]
+    return [
+        "HOOK_EVIDENCE_MISSING: no complete start/end pair from a host stop hook"
+    ]
 
 
 def validate_worker(root: Path, task_id: str, manifest: Dict[str, Any]) -> List[str]:
@@ -657,6 +865,29 @@ def emit_requirement_coverage(errors: List[str]) -> None:
         print("REQUIREMENT_COVERAGE_FAIL")
 
 
+def emit_gear_violation(errors: List[str]) -> None:
+    if any("GEAR_VIOLATION" in str(error) for error in errors):
+        print("GEAR_VIOLATION")
+
+
+def emit_hook_evidence(errors: List[str]) -> None:
+    if any("HOOK_EVIDENCE_MISSING" in str(error) for error in errors):
+        print("HOOK_EVIDENCE_MISSING")
+
+
+def emit_parallel_fail(errors: List[str]) -> None:
+    if any("PARALLEL_FAIL" in str(error) for error in errors):
+        print("PARALLEL_FAIL")
+
+
+def emit_close_tokens(errors: List[str]) -> None:
+    emit_policy_conflict(errors)
+    emit_requirement_coverage(errors)
+    emit_gear_violation(errors)
+    emit_hook_evidence(errors)
+    emit_parallel_fail(errors)
+
+
 def verification_required(manifest: Dict[str, Any]) -> bool:
     return bool(verification_policy(manifest)["independent_verification"])
 
@@ -789,6 +1020,8 @@ def cmd_round_init(args: argparse.Namespace, root: Path) -> int:
             "receipts": [],
             "window_status": {window: "pending" for window in windows},
             "tasks": tasks,
+            "gears": default_gears(),
+            "hook_supervision": False,
             "check_requested": False,
         },
     )
@@ -858,7 +1091,7 @@ def cmd_gate(args: argparse.Namespace, root: Path) -> int:
     return 0
 
 
-def cmd_audit_round(root: Path) -> int:
+def cmd_audit_round(root: Path, require_hook_evidence: bool = True) -> int:
     path = round_path(root)
     if not path.exists():
         # This is the normal result for projects that do not use this skill.
@@ -926,6 +1159,8 @@ def cmd_audit_round(root: Path) -> int:
         return 1
 
     coverage_errors: List[str] = []
+    coverage_errors.extend(validate_gears(data))
+    coverage_errors.extend(validate_subagents(root, data))
     coverage_errors.extend(validate_round_source_coverage(root, data))
     for task_id in task_ids:
         manifest, load_errors = load_manifest(root, task_id)
@@ -934,7 +1169,7 @@ def cmd_audit_round(root: Path) -> int:
             continue
         coverage_errors.extend(validate_requirement_coverage(manifest, task_id))
     if coverage_errors:
-        emit_requirement_coverage(coverage_errors)
+        emit_close_tokens(coverage_errors)
         for error in coverage_errors:
             print(f"- {error}")
         return 1
@@ -943,8 +1178,7 @@ def cmd_audit_round(root: Path) -> int:
     for task_id in task_ids:
         all_errors.extend(gate(root, task_id, "basic"))
     if all_errors:
-        emit_policy_conflict(all_errors)
-        emit_requirement_coverage(all_errors)
+        emit_close_tokens(all_errors)
         print("ROUND_GATE_FAIL")
         for error in all_errors:
             print(f"- {error}")
@@ -954,8 +1188,7 @@ def cmd_audit_round(root: Path) -> int:
     for task_id in task_ids:
         full_errors.extend(gate(root, task_id, "full"))
     if full_errors:
-        emit_policy_conflict(full_errors)
-        emit_requirement_coverage(full_errors)
+        emit_close_tokens(full_errors)
         if any(
             "verify-report" in error or "verifier" in error or "reviewer" in error
             for error in full_errors
@@ -966,6 +1199,13 @@ def cmd_audit_round(root: Path) -> int:
             print(f"- {error}")
         return 1
     print("FULL_GATE_PASS")
+    if require_hook_evidence:
+        hook_errors = validate_hook_evidence(root, data)
+        if hook_errors:
+            emit_hook_evidence(hook_errors)
+            for error in hook_errors:
+                print(f"- {error}")
+            return 1
     print("ROUND_READY_TO_CLOSE")
     return 0
 
@@ -1044,7 +1284,7 @@ def cmd_hook_audit(root: Path, source: str, host: Optional[str] = None) -> int:
     exit_code = 0
     audit_result = "ok"
     try:
-        exit_code = cmd_audit_round(root)
+        exit_code = cmd_audit_round(root, require_hook_evidence=False)
         audit_result = "ok" if exit_code == 0 else "fail"
     except Exception as exc:
         exit_code = 1
@@ -1067,14 +1307,14 @@ def cmd_migrate_project(args: argparse.Namespace, root: Path) -> int:
     destination = safe_destination(root, args.destination)
     source = Path(__file__).resolve()
     if destination == source:
-        print("FAIL: destination is the currently running v0.29 script")
+        print("FAIL: destination is the currently running v0.30 script")
         return 1
     if destination.exists() and not args.force:
         print(f"FAIL: destination exists; add --force to replace: {destination.relative_to(root)}")
         return 1
     destination.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(source, destination)
-    print(f"MIGRATED {destination.relative_to(root)} from multi-window_M v0.29")
+    print(f"MIGRATED {destination.relative_to(root)} from multi-window_M v0.30")
     return 0
 
 
@@ -1173,6 +1413,7 @@ def render_status_markdown(root: Path) -> str:
                 f"- 本轮窗口: {', '.join(windows) or '(none)'}",
                 f"- receipts: {', '.join(receipts) or '(none)'}",
                 f"- check_requested: {round_data.get('check_requested', False)}",
+                f"- gears: {format_gears_line(round_data)}",
                 "",
             ]
         )
@@ -1642,6 +1883,7 @@ def cmd_handoff(root: Path) -> int:
         receipts = round_data.get("receipts") or []
         print(f"- receipts: {', '.join(str(item) for item in receipts) or '(none)'}")
         print(f"- check_requested: {round_data.get('check_requested', False)}")
+        print(f"- gears: {format_gears_line(round_data)}")
         window_status = round_data.get("window_status")
         if isinstance(window_status, dict):
             for window in windows:
@@ -1697,7 +1939,7 @@ def cmd_handoff(root: Path) -> int:
     print("## 建议")
     if open_items:
         print("- 先处理未闭环任务；生成 brief 再贴给工人/验收人，不要手写转述")
-        print("- 出现 POLICY_CONFLICT 则停止收口")
+        print("- 出现 POLICY_CONFLICT / GEAR_VIOLATION / HOOK_EVIDENCE_MISSING / PARALLEL_FAIL 则停止收口")
     else:
         print("- 本轮任务已闭环。新需求先 init + brief，不要只改聊天话术")
     print("- 窗口状态 ≠ 任务完成；不要把 M/C verified 当成 TASK done")
@@ -1750,7 +1992,7 @@ def root_after_subcommand(tokens: List[str]) -> bool:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="multi-window_M v0.29 task gate",
+        description="multi-window_M v0.30 task gate",
         epilog="Place --root before the subcommand: taskctl.py --root <dir> status",
     )
     parser.add_argument(
@@ -1791,7 +2033,7 @@ def build_parser() -> argparse.ArgumentParser:
     hook = sub.add_parser("hook-audit", help="record a Stop-hook run and audit the current round")
     hook.add_argument("--source", choices=["manual", "codex-stop", "cursor-stop", "zcode-stop"], default="manual")
     hook.add_argument("--host", choices=["cursor", "codex", "zcode", "manual"])
-    migrate = sub.add_parser("migrate-project", help="copy this v0.29 taskctl into the project")
+    migrate = sub.add_parser("migrate-project", help="copy this v0.30 taskctl into the project")
     migrate.add_argument("--destination", default="scripts/taskctl.py")
     migrate.add_argument("--force", action="store_true", help="replace an existing destination")
     status_parser = sub.add_parser("status", help="show window and task states")

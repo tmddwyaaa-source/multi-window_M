@@ -1,36 +1,39 @@
 ---
-name: multi-window_M-0.29
+name: multi-window_M-0.30
 description: >-
   多窗口分工：常驻仅 M1～M10；短期任务用临时窗 C1、C2（一轮最多 4 个）。
   禁止 M11+、禁止 CB1 当窗号。json 文件名 CB2 只给脚本认。
-  用户新需求必须写入 source_refs → R 项 → 验收命令；未映射则 REQUIREMENT_COVERAGE_FAIL。
+  开局自报三套挡位；未确认禁止报加分或走协作挡 A。
+  hook_supervision 为真时收口必须有宿主 stop 的 start/end 对，手动 audit-round 不能替代。
+  子代理必须绑定 task_id/window/allowed_paths/run_id。
   状态表只由 taskctl status --markdown 从 .task/ 渲染；派工用 brief，接班用 handoff。
   默认不说加分；M1 唯一收口；查收以本窗重跑为准。
   规则只描述当前行为；门禁细节见 references/task-gate.md。
   斥候→主力→搜剿；卡点最多 4 次。
   在用户提到多窗口、M1、C1、查收、模块注册表、斥候/主力/搜剿时使用。
-version: "0.29"
+version: "0.30"
 disable-model-invocation: true
 ---
 
-# Multi-Window_M-0.29（常驻 M1～M10，临时 Cn）
+# Multi-Window_M-0.30（常驻 M1～M10，临时 Cn）
 
-本文件夹名带版本号，是升级系列的隔离副本；`version` 字段也是 0.29。调用：`/multi-window_M-0.29`。历史版本说明见 [CHANGELOG.md](CHANGELOG.md)，不得当作当前规则。
+本文件夹名带版本号，是升级系列的隔离副本；`version` 字段也是 0.30。调用：`/multi-window_M-0.30`。历史版本说明见 [CHANGELOG.md](CHANGELOG.md)，不得当作当前规则。
 
 复制即用话术见 [templates.md](templates.md)。G0～G3、manifest schema、`transition` 表见 [references/task-gate.md](references/task-gate.md)。宿主 Hook 接线只允许写在 [references/hooks.md](references/hooks.md)。
 
 ## 本版唯一问题与成功标准
 
-**问题：** 用户口头加需求、测试仍绿，但有条目从未做成 R 项（没漏测但漏做）。
+**问题：** 低挡假装高挡，或声称有 hook 监督却没有宿主 stop 日志，仍把任务标完成。
 
 **成功标准：**
 
-- manifest 必须有 `source_refs`：每条原始需求 `id` / `text` / `maps_to`（指向已有 R 编号）。每条 R 也必须被某条 source 映射到。
-- 可选：`round.json` 的 `source_requirements` 列出本轮用户需求；`audit-round` 发现未映射条目输出 `REQUIREMENT_COVERAGE_FAIL` 并停止收口。
-- 用户新增需求必须走「来源记录 → R 项 → 验收命令」，禁止只改聊天话术。
-- 负向：缺 `source_refs`、`maps_to` 为空、映射到不存在的 R、round 列出但任务未收录 → `REQUIREMENT_COVERAGE_FAIL`。
+- 开局自报三套挡位（能力 / 协作 / 风险）。能力未确认一律默认；协作挡 A 仅限已确认加分。
+- `round.json` 可写 `gears`（`capability=default|bonus`，`collaboration=P|A`，`capability_confirmed`）。未确认却写 bonus 或 A → `GEAR_VIOLATION`，停止收口。
+- `hook_supervision=true` 时，`audit-round` 收口必须看到宿主 stop（`cursor-stop` / `codex-stop` / `zcode-stop`）的完整 start/end 对。缺日志或只有 `manual` → `HOOK_EVIDENCE_MISSING`。手动 `audit-round` 成功不能替代 hook 证据。
+- 子代理写入 `subagents`（`task_id` / `window` / `allowed_paths` / `run_id`）。同文件并发、重复 run_id、工人兼 verifier、越权路径 → `PARALLEL_FAIL`。
+- Hook 仍遵守三不：不改状态、不派工、不标 done。加分 / A 挡不放松验收：漏跑独立验收仍 `FULL_GATE_FAIL`。
 
-0.28 的状态视图、0.27 的 `brief` / `handoff`、0.26 的 `POLICY_CONFLICT` 仍是当前规则。本版不改状态机、Hook 三不、窗号或证据格式。
+0.29 的 `source_refs`、0.28 的状态视图、0.27 的 `brief` / `handoff`、0.26 的 `POLICY_CONFLICT` 仍是当前规则。本版不改窗号、状态机转移表或目录结构。
 
 ## 核心认知（三条铁规则）
 
@@ -47,21 +50,31 @@ disable-model-invocation: true
 - **「亲自微修订」必须用户点名**。没点名就派对应 M 或 C。用户对 M1 说「开工 / 修一下 / 顺手」= 写 Registry + 开工话术，不等于本窗当主力。
 - **网页预览仅 M1**。子窗口禁止打开网页预览。查收通过后能开则 M1 打开；打不开则跳过，不因此 fail。
 
-### 环境：默认与加分
+### 环境：三套挡位（开局自报）
 
-本 skill 不绑死某一款 Agent 软件，也不按软件名写死「永远加分」或「永远排除」。所有宿主都从**默认**开始。能力确认测试命令按宿主写在 `references/hooks.md`，新窗口跑一次即算本窗确认。
+本 skill 不绑死某一款 Agent 软件。三套挡位正交，只影响协作方式，**不影响验收纪律**（本窗重跑、`transition` 收口、M1 唯一收口在任何挡位不变）。不确定一律落低挡。
 
-加分只看**这一窗已经确认**的额外能力，不看产品说明书上「可能有」什么。窗间对话是否可见，各宿主不一样；窗间不可见也不等于不能加分——仍可能有别的额外能力（例如能把子代理结果收回本会话）。说明书上有子代理、本窗还没用上或未确认，**不是**加分。
+| 挡位 | 取值 | 判定 |
+|------|------|------|
+| **能力** | 默认 / 加分（bonus） | 本窗已确认的额外能力；未确认 = 默认。前 3 轮点名加分，不确定只问不报 |
+| **协作** | P 人路由多窗 / A M1 子代理半自动 | P 是所有宿主起点且永久保留；A 仅限 `capability=bonus` 且 `capability_confirmed=true` |
+| **风险** | 短路径 / 独立验收 | 唯一策略表：low 且 attempt<2 走短路径，其余独立验收 |
 
-| | **默认** | **加分** |
-|--|----------|----------|
-| 何时 | 所有环境的起点；未确认额外能力时全程按此 | 本窗已确认存在超出默认的额外能力（例如能引用其他对话原文，或能把子代理结果收回本会话） |
+能力确认测试命令按宿主写在 `references/hooks.md`。新窗口跑一次、本窗实际收到结果才算确认。说明书上有子代理、本窗还没用上，**不是**加分，也**不能**把协作挡写成 A。
+
+`round.json` 用 `gears` 记录能力挡与协作挡；风险挡仍由各任务 `risk` / `attempt` / `verification_required` 决定。未写 `gears` = 默认 + P。未确认却写 bonus 或 A → `GEAR_VIOLATION`。
+
+加分只看**这一窗已经确认**的额外能力。窗间对话是否可见，各宿主不一样；窗间不可见也不等于不能加分——仍可能有别的额外能力（例如能把子代理结果收回本会话）。
+
+| | **默认（P）** | **加分（可升 A）** |
+|--|----------|------|
+| 何时 | 所有环境的起点；未确认额外能力时全程按此 | 本窗已确认存在超出默认的额外能力 |
 | 看见什么 | 不假设能看见其他会话的聊天原文 | 已确认的关联会话 / 子代理回传可作为**线索** |
-| 协作 | 同一项目路径 + `docs/` + 用户把查收信号送到 M1 | 可少传话、少开窗 |
+| 协作 | 同一项目路径 + `docs/` + 用户把查收信号送到 M1 | 可少传话、少开窗；子代理必须写入 `subagents` 绑定 |
 | 查收 | 本窗重跑该窗验收命令 | 同样必须本窗重跑。不能只凭「那边说完成了」标 done |
-| 出句 | **不要说加分**，直接派工 | 前 3 轮必须点名「当前是加分状态」 |
+| 出句 | **不要说加分**，直接派工 | 前 3 轮必须点名「当前是加分状态」并自报三套挡位 |
 
-**出句（硬性，只约束 M1）：** 只有判定为加分才准贴加分句。默认禁止说加分。不确定则前 3 轮内只问、禁止先报加分；未确认前按默认。前 3 轮没点名 → 本窗全程按默认。句式见 templates.md（加分句不是默认开场）。
+**出句（硬性，只约束 M1）：** 开局先报本窗挡位。只有判定为加分才准贴加分句。默认禁止说加分。不确定则前 3 轮内只问、禁止先报加分；未确认前按默认。前 3 轮没点名 → 本窗全程按默认。句式见 templates.md（加分句不是默认开场）。
 
 **默认流程（所有宿主的起点）：** M1 派工写 Registry 与 manifest → 跑 `brief` 把生成物交给工人 → **用户**开 M/C 窗并说「我是 {窗号}」→ 工人按简报改文件并**自己在本窗终端跑验收命令** → **用户**对 M1 说「{窗号} 已完成，请查收」→ M1 **再跑同一条命令**。失败则 M1 打回，**用户**再到该工人窗说「按打回项继续」。没有「跑完自动交 M1」「失败自动重开」这一跳。新 M1 先跑 `handoff`，不要凭聊天记忆接班。
 
@@ -124,6 +137,9 @@ disable-model-invocation: true
 - **接班简报：** `py -3 scripts/taskctl.py --root <项目根> handoff`。新 M1 先跑这一条再动手。不存在的 task 或非法 `--role` 会被拒绝。
 - **状态视图：** `py -3 scripts/taskctl.py --root <项目根> status --markdown --write`。写入 `docs/TASK-STATUS.md`。禁止手改该文件；不要在 Registry / RECEIPT-LOG 里另写一套 pending/done 当权威。
 - **需求覆盖：** 用户每条新需求写入 `source_refs`（或 round 的 `source_requirements`）并映射到带 `verify`/`verify_cmd` 的 R 项。缺映射 → `REQUIREMENT_COVERAGE_FAIL`，停止收口。禁止只改聊天话术。
+- **挡位：** `round.json` 的 `gears` 记录能力挡与协作挡。未写 = 默认 + P。未确认的 bonus / A → `GEAR_VIOLATION`。
+- **Hook 证据：** `hook_supervision=true` 时，收口必须有宿主 stop 的 start/end 对。缺日志或只有 manual → `HOOK_EVIDENCE_MISSING`。无 hook 宿主不要打开 `hook_supervision`，以免卡死最低挡。
+- **子代理绑定：** 派出的子代理写入 `subagents`（`task_id` / `window` / `allowed_paths` / `run_id`）。同文件并发、重复、工人兼 verifier、越权 → `PARALLEL_FAIL`。
 
 旧项目升级：用**已安装的本技能脚本**执行 `migrate-project --destination scripts/taskctl.py --force`，再跑门禁。
 
@@ -131,7 +147,9 @@ disable-model-invocation: true
 
 Hook 只是触发器，不是验收结论。有 `.task/` 时 `hook-audit` 写 `.task/hook-runs.jsonl`（`start`/`end` 成对，同一 `run_id`，最多 100 行，应 gitignore）。没有 `.task/` 时静默跳过。
 
-Hook **三不**：不改状态、不派工、不标 done。失败只记账。手动 `audit-round` 不能冒充 Hook 证据。即使 Hook 输出成功，也不能替代 M1 本窗重新运行 Full Gate。
+`round.json` 的 `hook_supervision` 默认为 false。为 true 时，M1 跑 `audit-round` 收口必须看到 `source` 为 `cursor-stop` / `codex-stop` / `zcode-stop` 的完整一对；`--source manual` 或只跑 `audit-round` **不算** hook 证据。未声明监督时，缺 jsonl 不卡死最低挡，但也不得把缺日志当成完成证据。
+
+Hook **三不**：不改状态、不派工、不标 done。失败只记账。即使 Hook 输出成功，也不能替代 M1 本窗重新运行 Full Gate。
 
 宿主差异（事件名、适配器、能力确认测试命令）只写在 `references/hooks.md`。本文件与 `taskctl.py` 不按宿主名分支行为。
 
@@ -150,7 +168,7 @@ Hook **三不**：不改状态、不派工、不标 done。失败只记账。手
 2. 只核这些窗的路径、交付物、验收命令。
 3. 磁盘：产出是否在规定路径。
 4. 本窗重跑验收命令。通过 = **内容通过**。关联会话只当线索。
-5. 启用 `.task/` 时：按策略表 `transition` 收口；`audit-round` 出现 `BASIC_GATE_PASS` + `FULL_GATE_PASS` + `ROUND_READY_TO_CLOSE` 后，M1 才能逐项 `done`。出现 `POLICY_CONFLICT` 或 `REQUIREMENT_COVERAGE_FAIL` 则停止收口，写 BLOCKERS。
+5. 启用 `.task/` 时：按策略表 `transition` 收口；`audit-round` 出现 `BASIC_GATE_PASS` + `FULL_GATE_PASS` + `ROUND_READY_TO_CLOSE` 后，M1 才能逐项 `done`。出现 `POLICY_CONFLICT`、`REQUIREMENT_COVERAGE_FAIL`、`GEAR_VIOLATION`、`HOOK_EVIDENCE_MISSING` 或 `PARALLEL_FAIL` 则停止收口，写 BLOCKERS。
 6. 本轮名单都通过 → 标 done、记 RECEIPT-LOG、做合并；能开则打开网页预览。临时 C 窗 done 后视为本轮关闭。
 7. 命令失败 → **fail**，打回该窗（由用户再进该窗，不会自动重开）。
 8. 本轮还有窗没交 → **整轮未齐**。
@@ -184,10 +202,10 @@ M1 定标准 → 常驻骨架模块先过查收 → 其余常驻 M 可并行；�
 并行只提高效率，不是新工作流：
 
 - 只用**当前宿主已经提供**的多代理 / 子代理。宿主没有就不要强用，不要发明新窗口角色或新编号（不新增 F、Scout 窗、M11+）。
-- 默认流程仍是用户开 M/C 窗并传查收。子代理不是窗号；活必须落在 Registry 已有 M/C 任务和 `allowed_paths` 上。
+- 默认流程仍是用户开 M/C 窗并传查收。子代理不是窗号；活必须落在 Registry 已有 M/C 任务和 `allowed_paths` 上，并写入 `subagents`（`task_id` / `window` / `allowed_paths` / `run_id`）。
 - 同一文件仍只让一个任务主改。不能用同一个子代理既当工人又当独立验收。
 - 子代理回传说完成，只当查收**信号/线索**。M1 仍须本窗重跑，仍须 `transition` 收口。
-- 未确认本窗有额外能力时，不要少开窗、少等用户传话，也不要说加分。
+- 未确认本窗有额外能力时，不要少开窗、少等用户传话，也不要说加分，协作挡保持 P。
 
 | 原则 | 说明 |
 |------|------|
@@ -214,3 +232,7 @@ M1 定标准 → 常驻骨架模块先过查收 → 其余常驻 M 可并行；�
 - 派工时手写转述代替 `brief` 生成物，或新 M1 不跑 `handoff` 凭记忆接班
 - 手改 `docs/TASK-STATUS.md`，或用 Registry / RECEIPT-LOG 的 pending/done 覆盖 `.task/`
 - 用户口头加需求却不写 `source_refs` / `source_requirements`，或映射空的 `maps_to` 仍标完成
+- 未确认却自报加分 / 协作挡 A，或 `gears.capability=bonus` 但 `capability_confirmed` 为假
+- `hook_supervision=true` 却用手动 `audit-round` / `--source manual` 冒充 hook 证据
+- 派出子代理却不写 `subagents`，或同文件并发 / 工人兼 verifier / 越权路径仍收口
+- 加分或 A 挡漏跑独立验收，仍把任务标完成

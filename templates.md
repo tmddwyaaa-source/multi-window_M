@@ -64,20 +64,25 @@
 
 ## M1 开场
 
-默认：不要说加分，直接派工。加分句不是开场模板。
+默认：先自报三套挡位，不要说加分，直接派工。加分句不是开场模板。
+
+```text
+本窗挡位：能力=默认 协作=P 风险=按策略表。未确认不加分。hook_supervision=否。
+```
 
 ### 仅加分时使用（本窗已确认额外能力，前 3 轮）
 
 ```text
+本窗挡位：能力=加分（已确认）协作=A 风险=按策略表。hook_supervision=是（若本宿主已接线）。
 当前是加分状态：本窗已确认有超出默认的额外能力（作线索，不能代替本窗重跑验收命令）。
 ```
 
-禁止在未确认时贴上面这句。说明书上「可能有子代理」不够。
+禁止在未确认时贴上面这句。说明书上「可能有子代理」不够。未确认却把 round.json 写成 bonus 或 A → `GEAR_VIOLATION`。
 
 ### 不确定时只问（禁止先报加分）
 
 ```text
-当前环境是否已能关联其他对话，或已能把子代理结果收回本会话？能则本窗为加分（须点名）；不能或未确认则按默认，不要说加分。
+当前环境是否已能关联其他对话，或已能把子代理结果收回本会话？能则本窗为加分（须点名并写 capability_confirmed）；不能或未确认则按默认+P，不要说加分。
 ```
 
 ## M1 接班
@@ -92,9 +97,9 @@ py -3 scripts/taskctl.py --root <项目根> status --markdown --write
 把 `handoff` 与 `docs/TASK-STATUS.md` 当接班状态源。然后再：
 
 ```text
-/multi-window_M-0.29
+/multi-window_M-0.30
 我是 M1。已阅读 handoff 生成物。按未闭环项继续；查收仍须本窗重跑；M1 唯一收口。
-不要报加分（除非本窗已确认并点名）。不要手写转述代替 brief。
+先自报挡位。不要报加分（除非本窗已确认并点名）。不要手写转述代替 brief。
 ```
 
 ## 派工：先 brief 再贴窗
@@ -138,7 +143,7 @@ py -3 scripts/taskctl.py --root <项目根> brief TASK-001 --role verifier
 ### 斥候
 
 ```text
-/multi-window_M-0.29
+/multi-window_M-0.30
 我是 {窗号}。当前角色：斥候（只调查，禁止改任何文件）。
 请读 {项目路径}/docs/MODULE-REGISTRY.md 中【{窗号}】章节。
 主题：{一句话}
@@ -157,7 +162,7 @@ py -3 scripts/taskctl.py --root <项目根> brief TASK-001 --role verifier
 ### 主力
 
 ```text
-/multi-window_M-0.29
+/multi-window_M-0.30
 我是 {窗号}。当前角色：主力（只实现，最小改动）。
 请读 Registry 中【{窗号}】章节。依据斥候报告（若有则以下为准）：
 ---
@@ -178,7 +183,7 @@ py -3 scripts/taskctl.py --root <项目根> brief TASK-001 --role verifier
 ### 搜剿 — 子窗口自检
 
 ```text
-/multi-window_M-0.29
+/multi-window_M-0.30
 我是 {窗号}。当前角色：搜剿（禁止修改实现代码）。
 卡点签名：{现象 + 位置/测试}
 本轮循环计数：{k}/4
@@ -198,7 +203,7 @@ py -3 scripts/taskctl.py --root <项目根> brief TASK-001 --role verifier
 ### M1 最终查收
 
 ```text
-/multi-window_M-0.29
+/multi-window_M-0.30
 我是 M1。当前角色：搜剿（只验收，禁止顺手改子模块来“修完”）。
 用户汇报：{窗号} 已完成，请查收。（或：所有窗口已完成 = 只核本轮派工名单）
 
@@ -412,11 +417,18 @@ D:\gongju\{工具名}-{版本号}/
   "source_requirements": [
     {"id": "S1", "text": "用户本轮原始需求"}
   ],
+  "gears": {
+    "capability": "default",
+    "collaboration": "P",
+    "capability_confirmed": false
+  },
+  "hook_supervision": false,
+  "subagents": [],
   "check_requested": false
 }
 ```
 
-用户发送「M4 已完成，请查收」后，M1 记录 receipt；所有本轮窗口都收到后，将 `check_requested` 设为 `true`，再运行 `taskctl.py audit-round`。脚本会检查 `window_status` 是否存在、覆盖全部窗口，并与 receipts 一致。用户中途加需求：先写入 `source_requirements` / 对应任务 `source_refs` 并补 R 项与 verify，禁止只改聊天。未映射 → `REQUIREMENT_COVERAGE_FAIL`。
+用户发送「M4 已完成，请查收」后，M1 记录 receipt；所有本轮窗口都收到后，将 `check_requested` 设为 `true`，再运行 `taskctl.py audit-round`。脚本会检查 `window_status` 是否存在、覆盖全部窗口，并与 receipts 一致。用户中途加需求：先写入 `source_requirements` / 对应任务 `source_refs` 并补 R 项与 verify，禁止只改聊天。未映射 → `REQUIREMENT_COVERAGE_FAIL`。未确认却写 bonus/A → `GEAR_VIOLATION`。`hook_supervision=true` 但没有宿主 stop 对 → `HOOK_EVIDENCE_MISSING`。子代理冲突 → `PARALLEL_FAIL`。
 
 ### 开工补充话术
 

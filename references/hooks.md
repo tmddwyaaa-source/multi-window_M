@@ -12,7 +12,7 @@
 
 ## Codex
 
-Codex 使用项目级 `.codex/hooks.json` 或用户级 `~/.codex/hooks.json`。建议先使用项目级配置。把 `{SKILL_ROOT}` 换成本机 Codex 技能目录（升级系列隔离副本为 `...\skills\multi-window_M-0.29`）：
+Codex 使用项目级 `.codex/hooks.json` 或用户级 `~/.codex/hooks.json`。建议先使用项目级配置。把 `{SKILL_ROOT}` 换成本机 Codex 技能目录（升级系列隔离副本为 `...\skills\multi-window_M-0.30`）：
 
 ```json
 {
@@ -35,7 +35,7 @@ Codex 使用项目级 `.codex/hooks.json` 或用户级 `~/.codex/hooks.json`。�
 }
 ```
 
-自动记录 `source=codex-stop`、`host=codex`。手动调用默认 `source=manual`。不要只凭手动 `audit-round` 当作 Hook 证据。
+自动记录 `source=codex-stop`、`host=codex`。手动调用默认 `source=manual`。不要只凭手动 `audit-round` 当作 Hook 证据。`hook_supervision=true` 时，收口只认宿主 stop 的 start/end 对。
 
 **能力确认测试命令：** 在本窗派一个只回复 `CAP-OK` 的子代理（或打开另一则已有对话并引用一句原文）。本窗收到 `CAP-OK` 或那句原文 → 将该项记为已确认；都没收到 → 默认，不要报加分。能力确认状态：待实测。
 
@@ -63,7 +63,7 @@ Codex 使用项目级 `.codex/hooks.json` 或用户级 `~/.codex/hooks.json`。�
 py -3 <SKILL_ROOT>\scripts\taskctl.py --root <工作区> hook-audit --source cursor-stop --host cursor
 ```
 
-隔离副本的 `SKILL_ROOT` 例：`C:\Users\user\.cursor\skills\multi-window_M-0.29`。
+隔离副本的 `SKILL_ROOT` 例：`C:\Users\user\.cursor\skills\multi-window_M-0.30`。
 
 - 不要设 `failClosed`。适配器始终退出码 0。
 - 诊断日志：`C:\Users\user\.cursor\hooks\last-cursor-stop.log`（无 `.task/` 也写）。
@@ -84,7 +84,7 @@ py -3 <SKILL_ROOT>\scripts\taskctl.py --root <项目根> hook-audit --source zco
 
 ## 无 hook 宿主
 
-暂不为 dsh 配置。人工：`py -3 scripts/taskctl.py audit-round`。无 hook 不等于不能收口：走默认流程，不要把缺 hook 日志当成完成证据，也不要因此卡死最低挡。
+暂不为 dsh 配置。人工：`py -3 scripts/taskctl.py audit-round`。无 hook 不等于不能收口：走默认流程，**不要打开** `hook_supervision`，以免 `HOOK_EVIDENCE_MISSING` 卡死最低挡。也不要把缺 hook 日志当成完成证据。
 
 **能力确认测试命令：** 无。按默认，不要报加分。
 

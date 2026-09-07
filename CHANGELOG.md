@@ -2,6 +2,14 @@
 
 当前规则以 `SKILL.md` 的 `version` 字段为准。本文件只作历史说明，**不得当作当前规则引用**。
 
+## 0.30 — 挡位正式化 + 证据收紧（2026-09-07）
+
+- 开局自报三套挡位。`round.json` 增加 `gears` / `hook_supervision` / `subagents`。
+- 未确认却写 bonus 或协作挡 A → `GEAR_VIOLATION`。加分不放松验收。
+- `hook_supervision=true` 收口必须有宿主 stop 的 start/end 对；手动 `audit-round` / `--source manual` 不能替代 → `HOOK_EVIDENCE_MISSING`。
+- 子代理必须绑定 `task_id` / `window` / `allowed_paths` / `run_id`。同文件并发、重复、工人兼 verifier、越权 → `PARALLEL_FAIL`。
+- Hook 仍三不：不改状态、不派工、不标 done。
+
 ## 0.29 — 需求覆盖（2026-09-07）
 
 - manifest 增加 `source_refs`（原始需求 → R 项）。每条 R 必须被映射；`maps_to` 不能为空。

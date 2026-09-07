@@ -56,6 +56,9 @@ py -3 scripts/taskctl.py --root <项目根> status --markdown --write
 - `BASIC_GATE_PASS` + `FULL_GATE_PASS` + `ROUND_READY_TO_CLOSE`：本轮所有任务均通过，M1 才能逐项 `done`。
 - `POLICY_CONFLICT`：策略无法唯一决定，停止收口。
 - `REQUIREMENT_COVERAGE_FAIL`：有用户需求未映射到 R 项，停止收口。
+- `GEAR_VIOLATION`：未确认却宣称 bonus / 协作挡 A，停止收口。
+- `HOOK_EVIDENCE_MISSING`：声明了 hook 监督但没有宿主 stop 的 start/end 对，停止收口。
+- `PARALLEL_FAIL`：子代理同文件并发、重复、工人兼 verifier 或越权路径，停止收口。
 
 脚本负责输出 `RESULT PASS` / `RESULT FAIL` / `POLICY_CONFLICT`；agent 不得只凭口头或自行打印 PASS。
 
@@ -79,6 +82,12 @@ py -3 scripts/taskctl.py --root <项目根> status --markdown --write
 最小字段：`task_id`、`owner`、`track`、`risk`、`allowed_paths`、`source_refs`、`requirements`、`attempt`。每个 requirement 至少包含 `id`、`text`、`verify`。可跑的验收命令写在 `verify_cmd`，或把 `verify` 写成可直接执行的命令。
 
 `source_refs` 每条：`id`、`text`（用户原始需求）、`maps_to`（非空 R 编号列表）。每条 R 必须被映射到。`round.json` 可选 `source_requirements`；列出的 id 必须出现在某任务的 `source_refs` 里。未映射 → `REQUIREMENT_COVERAGE_FAIL`。禁止只改聊天话术加需求。
+
+`round.json` 可选：
+
+- `gears`：`capability`=`default|bonus`，`collaboration`=`P|A`，`capability_confirmed` 布尔。未写 = 默认 + P。bonus 或 A 必须 `capability_confirmed=true`，否则 `GEAR_VIOLATION`。
+- `hook_supervision`：默认 false。为 true 时，`audit-round` 收口需要 `hook-runs.jsonl` 里来自 `cursor-stop` / `codex-stop` / `zcode-stop` 的完整 start/end 对。`--source manual` 不算。缺证据 → `HOOK_EVIDENCE_MISSING`。无 hook 宿主不要打开此开关。
+- `subagents`：每条 `run_id`、`task_id`、`window`、`role`（`worker|scout|verifier`）、`allowed_paths`。路径必须落在该任务 `allowed_paths` 内。同文件并发、重复 `run_id`、同一窗既 worker 又 verifier → `PARALLEL_FAIL`。
 
 不要整份覆盖 `manifest.json` 来改状态。不要把显式 `independent_verification` 写成与 `risk` / `attempt` / `verification_required` 相反的值。
 
