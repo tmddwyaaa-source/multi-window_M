@@ -55,6 +55,7 @@ py -3 scripts/taskctl.py --root <项目根> status --markdown --write
 - `BASIC_GATE_PASS` + `FULL_GATE_FAIL`：有任务未通过，不能收口。
 - `BASIC_GATE_PASS` + `FULL_GATE_PASS` + `ROUND_READY_TO_CLOSE`：本轮所有任务均通过，M1 才能逐项 `done`。
 - `POLICY_CONFLICT`：策略无法唯一决定，停止收口。
+- `REQUIREMENT_COVERAGE_FAIL`：有用户需求未映射到 R 项，停止收口。
 
 脚本负责输出 `RESULT PASS` / `RESULT FAIL` / `POLICY_CONFLICT`；agent 不得只凭口头或自行打印 PASS。
 
@@ -75,7 +76,9 @@ py -3 scripts/taskctl.py --root <项目根> status --markdown --write
 
 ## manifest.json
 
-最小字段：`task_id`、`owner`、`track`、`risk`、`allowed_paths`、`requirements`、`attempt`。每个 requirement 至少包含 `id`、`text`、`verify`。可跑的验收命令写在 `verify_cmd`，或把 `verify` 写成可直接执行的命令。
+最小字段：`task_id`、`owner`、`track`、`risk`、`allowed_paths`、`source_refs`、`requirements`、`attempt`。每个 requirement 至少包含 `id`、`text`、`verify`。可跑的验收命令写在 `verify_cmd`，或把 `verify` 写成可直接执行的命令。
+
+`source_refs` 每条：`id`、`text`（用户原始需求）、`maps_to`（非空 R 编号列表）。每条 R 必须被映射到。`round.json` 可选 `source_requirements`；列出的 id 必须出现在某任务的 `source_refs` 里。未映射 → `REQUIREMENT_COVERAGE_FAIL`。禁止只改聊天话术加需求。
 
 不要整份覆盖 `manifest.json` 来改状态。不要把显式 `independent_verification` 写成与 `risk` / `attempt` / `verification_required` 相反的值。
 

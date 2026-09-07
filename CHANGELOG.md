@@ -2,6 +2,12 @@
 
 当前规则以 `SKILL.md` 的 `version` 字段为准。本文件只作历史说明，**不得当作当前规则引用**。
 
+## 0.29 — 需求覆盖（2026-09-07）
+
+- manifest 增加 `source_refs`（原始需求 → R 项）。每条 R 必须被映射；`maps_to` 不能为空。
+- `round.json` 可选 `source_requirements`。`audit-round` / Full Gate 发现未映射需求输出 `REQUIREMENT_COVERAGE_FAIL` 并停止收口。
+- 用户新增需求必须走「来源记录 → R 项 → 验收命令」，禁止只改聊天话术。
+
 ## 0.28 — 文档变视图（2026-09-07）
 
 - `taskctl.py status --markdown` 从 `.task/` 渲染窗口/任务状态表与 RECEIPT 摘要。

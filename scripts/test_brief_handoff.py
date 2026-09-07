@@ -56,6 +56,7 @@ def write_project(root: Path) -> None:
                 "verify_cmd": "py -3 tests/check_ping.py",
             }
         ],
+        "source_refs": [{"id": "S1", "text": "PING is ok", "maps_to": ["R1"]}],
     }
     round_data = {
         "round_id": "ROUND-001",

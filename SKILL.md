@@ -1,37 +1,36 @@
 ---
-name: multi-window_M-0.28
+name: multi-window_M-0.29
 description: >-
   多窗口分工：常驻仅 M1～M10；短期任务用临时窗 C1、C2（一轮最多 4 个）。
   禁止 M11+、禁止 CB1 当窗号。json 文件名 CB2 只给脚本认。
-  默认不说加分；仅本窗已确认额外能力时才点名加分。
-  状态表只由 taskctl status --markdown 从 .task/ 渲染，禁止手改 pending/done。
-  派工用 brief，接班用 handoff；M1 唯一收口。
-  查收以本窗重跑为准；证据可重跑；Hook 记 run_id/宿主/起止。
+  用户新需求必须写入 source_refs → R 项 → 验收命令；未映射则 REQUIREMENT_COVERAGE_FAIL。
+  状态表只由 taskctl status --markdown 从 .task/ 渲染；派工用 brief，接班用 handoff。
+  默认不说加分；M1 唯一收口；查收以本窗重跑为准。
   规则只描述当前行为；门禁细节见 references/task-gate.md。
   斥候→主力→搜剿；卡点最多 4 次。
   在用户提到多窗口、M1、C1、查收、模块注册表、斥候/主力/搜剿时使用。
-version: "0.28"
+version: "0.29"
 disable-model-invocation: true
 ---
 
-# Multi-Window_M-0.28（常驻 M1～M10，临时 Cn）
+# Multi-Window_M-0.29（常驻 M1～M10，临时 Cn）
 
-本文件夹名带版本号，是升级系列的隔离副本；`version` 字段也是 0.28。调用：`/multi-window_M-0.28`。历史版本说明见 [CHANGELOG.md](CHANGELOG.md)，不得当作当前规则。
+本文件夹名带版本号，是升级系列的隔离副本；`version` 字段也是 0.29。调用：`/multi-window_M-0.29`。历史版本说明见 [CHANGELOG.md](CHANGELOG.md)，不得当作当前规则。
 
 复制即用话术见 [templates.md](templates.md)。G0～G3、manifest schema、`transition` 表见 [references/task-gate.md](references/task-gate.md)。宿主 Hook 接线只允许写在 [references/hooks.md](references/hooks.md)。
 
 ## 本版唯一问题与成功标准
 
-**问题：** Registry / RECEIPT-LOG 手写 pending/done，与 `.task/` 漂移（已实际发生过）。
+**问题：** 用户口头加需求、测试仍绿，但有条目从未做成 R 项（没漏测但漏做）。
 
 **成功标准：**
 
-- `taskctl.py status --markdown` 从 `.task/`（唯一存储）渲染窗口/任务状态表与 RECEIPT 摘要。
-- `status --markdown --write` 写入 `docs/TASK-STATUS.md`。该表**禁止手改**，只由渲染再生。
-- Registry 章节仍可写路径与交付物；**状态列 / 查收结论**以生成表和 `transition` 为准。手写 `done` 不能覆盖 manifest。
-- 负向：没有 `.task/` 时 `--markdown` / `--write` 输出 `STATUS_FAIL: no .task` 并拒绝写文件。渲染**不改** `.task/` 状态。
+- manifest 必须有 `source_refs`：每条原始需求 `id` / `text` / `maps_to`（指向已有 R 编号）。每条 R 也必须被某条 source 映射到。
+- 可选：`round.json` 的 `source_requirements` 列出本轮用户需求；`audit-round` 发现未映射条目输出 `REQUIREMENT_COVERAGE_FAIL` 并停止收口。
+- 用户新增需求必须走「来源记录 → R 项 → 验收命令」，禁止只改聊天话术。
+- 负向：缺 `source_refs`、`maps_to` 为空、映射到不存在的 R、round 列出但任务未收录 → `REQUIREMENT_COVERAGE_FAIL`。
 
-0.27 的 `brief` / `handoff` 与 0.26 的 `POLICY_CONFLICT` 仍是当前规则。本版不改状态机、Hook 三不、窗号或证据格式。
+0.28 的状态视图、0.27 的 `brief` / `handoff`、0.26 的 `POLICY_CONFLICT` 仍是当前规则。本版不改状态机、Hook 三不、窗号或证据格式。
 
 ## 核心认知（三条铁规则）
 
@@ -124,6 +123,7 @@ disable-model-invocation: true
 - **派工简报：** `py -3 scripts/taskctl.py --root <项目根> brief TASK-xxx --role worker|scout|verifier`。M1 把终端输出原文贴给该窗或子代理，不要手写转述代替生成物。
 - **接班简报：** `py -3 scripts/taskctl.py --root <项目根> handoff`。新 M1 先跑这一条再动手。不存在的 task 或非法 `--role` 会被拒绝。
 - **状态视图：** `py -3 scripts/taskctl.py --root <项目根> status --markdown --write`。写入 `docs/TASK-STATUS.md`。禁止手改该文件；不要在 Registry / RECEIPT-LOG 里另写一套 pending/done 当权威。
+- **需求覆盖：** 用户每条新需求写入 `source_refs`（或 round 的 `source_requirements`）并映射到带 `verify`/`verify_cmd` 的 R 项。缺映射 → `REQUIREMENT_COVERAGE_FAIL`，停止收口。禁止只改聊天话术。
 
 旧项目升级：用**已安装的本技能脚本**执行 `migrate-project --destination scripts/taskctl.py --force`，再跑门禁。
 
@@ -150,7 +150,7 @@ Hook **三不**：不改状态、不派工、不标 done。失败只记账。手
 2. 只核这些窗的路径、交付物、验收命令。
 3. 磁盘：产出是否在规定路径。
 4. 本窗重跑验收命令。通过 = **内容通过**。关联会话只当线索。
-5. 启用 `.task/` 时：按策略表 `transition` 收口；`audit-round` 出现 `BASIC_GATE_PASS` + `FULL_GATE_PASS` + `ROUND_READY_TO_CLOSE` 后，M1 才能逐项 `done`。出现 `POLICY_CONFLICT` 则停止收口，写 BLOCKERS。
+5. 启用 `.task/` 时：按策略表 `transition` 收口；`audit-round` 出现 `BASIC_GATE_PASS` + `FULL_GATE_PASS` + `ROUND_READY_TO_CLOSE` 后，M1 才能逐项 `done`。出现 `POLICY_CONFLICT` 或 `REQUIREMENT_COVERAGE_FAIL` 则停止收口，写 BLOCKERS。
 6. 本轮名单都通过 → 标 done、记 RECEIPT-LOG、做合并；能开则打开网页预览。临时 C 窗 done 后视为本轮关闭。
 7. 命令失败 → **fail**，打回该窗（由用户再进该窗，不会自动重开）。
 8. 本轮还有窗没交 → **整轮未齐**。
@@ -213,3 +213,4 @@ M1 定标准 → 常驻骨架模块先过查收 → 其余常驻 M 可并行；�
 - 低风险短路径与独立验收两条路同时走，或忽略 `POLICY_CONFLICT` 继续收口
 - 派工时手写转述代替 `brief` 生成物，或新 M1 不跑 `handoff` 凭记忆接班
 - 手改 `docs/TASK-STATUS.md`，或用 Registry / RECEIPT-LOG 的 pending/done 覆盖 `.task/`
+- 用户口头加需求却不写 `source_refs` / `source_requirements`，或映射空的 `maps_to` 仍标完成

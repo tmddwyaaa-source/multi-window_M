@@ -12,7 +12,7 @@
 
 ## Codex
 
-Codex 使用项目级 `.codex/hooks.json` 或用户级 `~/.codex/hooks.json`。建议先使用项目级配置。把 `{SKILL_ROOT}` 换成本机 Codex 技能目录（升级系列隔离副本为 `...\skills\multi-window_M-0.28`）：
+Codex 使用项目级 `.codex/hooks.json` 或用户级 `~/.codex/hooks.json`。建议先使用项目级配置。把 `{SKILL_ROOT}` 换成本机 Codex 技能目录（升级系列隔离副本为 `...\skills\multi-window_M-0.29`）：
 
 ```json
 {
@@ -63,7 +63,7 @@ Codex 使用项目级 `.codex/hooks.json` 或用户级 `~/.codex/hooks.json`。�
 py -3 <SKILL_ROOT>\scripts\taskctl.py --root <工作区> hook-audit --source cursor-stop --host cursor
 ```
 
-隔离副本的 `SKILL_ROOT` 例：`C:\Users\user\.cursor\skills\multi-window_M-0.28`。
+隔离副本的 `SKILL_ROOT` 例：`C:\Users\user\.cursor\skills\multi-window_M-0.29`。
 
 - 不要设 `failClosed`。适配器始终退出码 0。
 - 诊断日志：`C:\Users\user\.cursor\hooks\last-cursor-stop.log`（无 `.task/` 也写）。

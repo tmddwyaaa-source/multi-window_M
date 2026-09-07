@@ -71,6 +71,7 @@ def write_task(root: Path, changed_files: list[str], allowed_paths: list[str] | 
                 "verify_cmd": "py -3 tests/test_clip.py",
             }
         ],
+        "source_refs": [{"id": "S1", "text": "clip", "maps_to": ["R1"]}],
     }
     report = {
         "task_id": "TASK-004",

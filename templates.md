@@ -92,7 +92,7 @@ py -3 scripts/taskctl.py --root <项目根> status --markdown --write
 把 `handoff` 与 `docs/TASK-STATUS.md` 当接班状态源。然后再：
 
 ```text
-/multi-window_M-0.28
+/multi-window_M-0.29
 我是 M1。已阅读 handoff 生成物。按未闭环项继续；查收仍须本窗重跑；M1 唯一收口。
 不要报加分（除非本窗已确认并点名）。不要手写转述代替 brief。
 ```
@@ -138,7 +138,7 @@ py -3 scripts/taskctl.py --root <项目根> brief TASK-001 --role verifier
 ### 斥候
 
 ```text
-/multi-window_M-0.28
+/multi-window_M-0.29
 我是 {窗号}。当前角色：斥候（只调查，禁止改任何文件）。
 请读 {项目路径}/docs/MODULE-REGISTRY.md 中【{窗号}】章节。
 主题：{一句话}
@@ -157,7 +157,7 @@ py -3 scripts/taskctl.py --root <项目根> brief TASK-001 --role verifier
 ### 主力
 
 ```text
-/multi-window_M-0.28
+/multi-window_M-0.29
 我是 {窗号}。当前角色：主力（只实现，最小改动）。
 请读 Registry 中【{窗号}】章节。依据斥候报告（若有则以下为准）：
 ---
@@ -178,7 +178,7 @@ py -3 scripts/taskctl.py --root <项目根> brief TASK-001 --role verifier
 ### 搜剿 — 子窗口自检
 
 ```text
-/multi-window_M-0.28
+/multi-window_M-0.29
 我是 {窗号}。当前角色：搜剿（禁止修改实现代码）。
 卡点签名：{现象 + 位置/测试}
 本轮循环计数：{k}/4
@@ -198,7 +198,7 @@ py -3 scripts/taskctl.py --root <项目根> brief TASK-001 --role verifier
 ### M1 最终查收
 
 ```text
-/multi-window_M-0.28
+/multi-window_M-0.29
 我是 M1。当前角色：搜剿（只验收，禁止顺手改子模块来“修完”）。
 用户汇报：{窗号} 已完成，请查收。（或：所有窗口已完成 = 只核本轮派工名单）
 
@@ -344,6 +344,9 @@ D:\gongju\{工具名}-{版本号}/
   "status": "pending",
   "status_history": [],
   "allowed_paths": ["src/", "tests/"],
+  "source_refs": [
+    {"id": "S1", "text": "用户原始需求一句话", "maps_to": ["R1"]}
+  ],
   "requirements": [
     {"id": "R1", "text": "可观察的需求", "verify": "py -3 tests/test_example.py", "verify_cmd": "py -3 tests/test_example.py"}
   ]
@@ -406,16 +409,20 @@ D:\gongju\{工具名}-{版本号}/
   "receipts": [],
   "window_status": {"M4": "pending", "C1": "pending"},
   "tasks": {"M4": ["TASK-001"], "C1": ["TASK-002"]},
+  "source_requirements": [
+    {"id": "S1", "text": "用户本轮原始需求"}
+  ],
   "check_requested": false
 }
 ```
 
-用户发送「M4 已完成，请查收」后，M1 记录 receipt；所有本轮窗口都收到后，将 `check_requested` 设为 `true`，再运行 `taskctl.py audit-round`。脚本会检查 `window_status` 是否存在、覆盖全部窗口，并与 receipts 一致。
+用户发送「M4 已完成，请查收」后，M1 记录 receipt；所有本轮窗口都收到后，将 `check_requested` 设为 `true`，再运行 `taskctl.py audit-round`。脚本会检查 `window_status` 是否存在、覆盖全部窗口，并与 receipts 一致。用户中途加需求：先写入 `source_requirements` / 对应任务 `source_refs` 并补 R 项与 verify，禁止只改聊天。未映射 → `REQUIREMENT_COVERAGE_FAIL`。
 
 ### 开工补充话术
 
 ```text
 本任务除原有 Registry 规则外，使用 .task/TASK-xxx/manifest.json 的 R 编号。
+source_refs 必须覆盖用户原始需求；不要做 brief 里没有映射的额外需求。
 只改 allowed_paths；结束时写 worker-report.json，逐条列出已覆盖的 R 编号、证据和已知遗漏。
 若开工消息含 taskctl brief 生成物，以简报为准。
 changed_files 只报你改的业务文件，不要报 manifest.json / rerun.json / verify-report.json。

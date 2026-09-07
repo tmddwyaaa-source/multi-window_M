@@ -60,6 +60,7 @@ def write_task(root: Path, *, risk: str, attempt: int = 0, extra: dict | None = 
                 "verify_cmd": "py -3 tests/test_ok.py",
             }
         ],
+        "source_refs": [{"id": "S1", "text": "ok", "maps_to": ["R1"]}],
     }
     if extra:
         manifest.update(extra)

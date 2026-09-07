@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
-"""Minimal, dependency-free task gate for multi-window_M v0.28.
+"""Minimal, dependency-free task gate for multi-window_M v0.29.
 
 Core behavior is host-agnostic. verification_policy() is the only close-path
-table (gate / audit-round / transition). brief/handoff print copy-ready
-handoffs without changing state. status --markdown renders docs views from
-.task/ only. G2 ignores role-owned .task files: manifest.json, rerun.json,
-and verify-report.json.
+table. source_refs maps original asks to R items; unmapped sources fail
+audit-round / Full Gate with REQUIREMENT_COVERAGE_FAIL.
 """
 
 from __future__ import annotations
@@ -256,11 +254,114 @@ def validate_manifest(manifest: Dict[str, Any], task_id: str) -> List[str]:
     duplicates = sorted({req_id for req_id in ids if ids.count(req_id) > 1})
     if duplicates:
         errors.append(f"{task_id}: duplicate requirement ids: {', '.join(duplicates)}")
+    errors.extend(validate_requirement_coverage(manifest, task_id))
     return errors
 
 
 def requirement_ids(manifest: Dict[str, Any]) -> List[str]:
     return [item["id"] for item in manifest.get("requirements", []) if isinstance(item, dict) and item.get("id")]
+
+
+def validate_requirement_coverage(manifest: Dict[str, Any], task_id: str) -> List[str]:
+    """Every original ask maps to an R item; every R item maps back to a source."""
+    errors: List[str] = []
+    req_ids = {str(item) for item in requirement_ids(manifest)}
+    refs = manifest.get("source_refs")
+    if refs is None:
+        return [f"REQUIREMENT_COVERAGE_FAIL: {task_id}: missing source_refs"]
+    if not isinstance(refs, list) or not refs:
+        return [f"REQUIREMENT_COVERAGE_FAIL: {task_id}: source_refs must be a non-empty list"]
+    mapped: set[str] = set()
+    seen_source: List[str] = []
+    for index, item in enumerate(refs, start=1):
+        if not isinstance(item, dict):
+            errors.append(
+                f"REQUIREMENT_COVERAGE_FAIL: {task_id}: source_refs[{index}] must be an object"
+            )
+            continue
+        source_id = item.get("id")
+        if not isinstance(source_id, str) or not source_id.strip():
+            errors.append(f"REQUIREMENT_COVERAGE_FAIL: {task_id}: source_refs[{index}] missing id")
+            continue
+        seen_source.append(source_id)
+        text = item.get("text")
+        if not isinstance(text, str) or not text.strip():
+            errors.append(f"REQUIREMENT_COVERAGE_FAIL: {task_id}: {source_id} missing text")
+        maps_to = item.get("maps_to")
+        if not isinstance(maps_to, list) or not maps_to:
+            errors.append(
+                f"REQUIREMENT_COVERAGE_FAIL: {task_id}: {source_id} has no mapped R item"
+            )
+            continue
+        for raw_id in maps_to:
+            req_id = str(raw_id)
+            if req_id not in req_ids:
+                errors.append(
+                    f"REQUIREMENT_COVERAGE_FAIL: {task_id}: {source_id} maps to missing {req_id}"
+                )
+            else:
+                mapped.add(req_id)
+    duplicates = sorted({item for item in seen_source if seen_source.count(item) > 1})
+    if duplicates:
+        errors.append(
+            f"REQUIREMENT_COVERAGE_FAIL: {task_id}: duplicate source ids: {', '.join(duplicates)}"
+        )
+    unmapped_r = sorted(req_ids - mapped)
+    if unmapped_r:
+        errors.append(
+            "REQUIREMENT_COVERAGE_FAIL: "
+            f"{task_id}: R items not mapped from source_refs: {', '.join(unmapped_r)}"
+        )
+    return errors
+
+
+def round_source_ids(round_data: Dict[str, Any]) -> Tuple[List[str], List[str]]:
+    raw = round_data.get("source_requirements")
+    if raw is None:
+        return [], []
+    if not isinstance(raw, list) or not raw:
+        return [], ["REQUIREMENT_COVERAGE_FAIL: round.source_requirements must be a non-empty list when present"]
+    declared: List[str] = []
+    errors: List[str] = []
+    for index, item in enumerate(raw, start=1):
+        if isinstance(item, str) and item.strip():
+            declared.append(item.strip())
+            continue
+        if isinstance(item, dict) and isinstance(item.get("id"), str) and item["id"].strip():
+            declared.append(item["id"].strip())
+            continue
+        errors.append(
+            f"REQUIREMENT_COVERAGE_FAIL: round.source_requirements[{index}] needs id"
+        )
+    return declared, errors
+
+
+def validate_round_source_coverage(root: Path, round_data: Dict[str, Any]) -> List[str]:
+    declared, errors = round_source_ids(round_data)
+    errors = list(errors)
+    if errors or not declared:
+        return errors
+    found: set[str] = set()
+    for task_id in task_ids_for_round(round_data):
+        manifest, load_errors = load_manifest(root, task_id)
+        if manifest is None:
+            errors.extend(
+                f"REQUIREMENT_COVERAGE_FAIL: {item}" if "REQUIREMENT_COVERAGE_FAIL" not in item else item
+                for item in load_errors
+            )
+            continue
+        refs = manifest.get("source_refs")
+        if not isinstance(refs, list):
+            continue
+        for item in refs:
+            if isinstance(item, dict) and isinstance(item.get("id"), str) and item["id"].strip():
+                found.add(item["id"].strip())
+    missing = [source_id for source_id in declared if source_id not in found]
+    if missing:
+        errors.append(
+            "REQUIREMENT_COVERAGE_FAIL: unmapped round sources: " + ", ".join(missing)
+        )
+    return errors
 
 
 def validate_worker(root: Path, task_id: str, manifest: Dict[str, Any]) -> List[str]:
@@ -551,6 +652,11 @@ def emit_policy_conflict(errors: List[str]) -> None:
         print("POLICY_CONFLICT")
 
 
+def emit_requirement_coverage(errors: List[str]) -> None:
+    if any("REQUIREMENT_COVERAGE_FAIL" in str(error) for error in errors):
+        print("REQUIREMENT_COVERAGE_FAIL")
+
+
 def verification_required(manifest: Dict[str, Any]) -> bool:
     return bool(verification_policy(manifest)["independent_verification"])
 
@@ -635,6 +741,9 @@ def cmd_init(args: argparse.Namespace, root: Path) -> int:
         "status": "pending",
         "status_history": [{"status": "pending", "at": now_iso(), "by": "taskctl"}],
         "allowed_paths": [],
+        "source_refs": [
+            {"id": "S1", "text": "请由 M1 填入用户原始需求", "maps_to": ["R1"]}
+        ],
         "requirements": [
             {"id": "R1", "text": "请由 M1 改写为可验收需求", "verify": "请填写验证方法"}
         ],
@@ -740,6 +849,7 @@ def cmd_gate(args: argparse.Namespace, root: Path) -> int:
     errors = gate(root, args.task_id, phase)
     if errors:
         emit_policy_conflict(errors)
+        emit_requirement_coverage(errors)
         print("RESULT FAIL")
         for error in errors:
             print(f"- {error}")
@@ -815,11 +925,26 @@ def cmd_audit_round(root: Path) -> int:
         print("AUDIT FAIL: round.tasks contains no task ids")
         return 1
 
+    coverage_errors: List[str] = []
+    coverage_errors.extend(validate_round_source_coverage(root, data))
+    for task_id in task_ids:
+        manifest, load_errors = load_manifest(root, task_id)
+        if manifest is None:
+            coverage_errors.extend(load_errors)
+            continue
+        coverage_errors.extend(validate_requirement_coverage(manifest, task_id))
+    if coverage_errors:
+        emit_requirement_coverage(coverage_errors)
+        for error in coverage_errors:
+            print(f"- {error}")
+        return 1
+
     all_errors: List[str] = []
     for task_id in task_ids:
         all_errors.extend(gate(root, task_id, "basic"))
     if all_errors:
         emit_policy_conflict(all_errors)
+        emit_requirement_coverage(all_errors)
         print("ROUND_GATE_FAIL")
         for error in all_errors:
             print(f"- {error}")
@@ -830,6 +955,7 @@ def cmd_audit_round(root: Path) -> int:
         full_errors.extend(gate(root, task_id, "full"))
     if full_errors:
         emit_policy_conflict(full_errors)
+        emit_requirement_coverage(full_errors)
         if any(
             "verify-report" in error or "verifier" in error or "reviewer" in error
             for error in full_errors
@@ -941,14 +1067,14 @@ def cmd_migrate_project(args: argparse.Namespace, root: Path) -> int:
     destination = safe_destination(root, args.destination)
     source = Path(__file__).resolve()
     if destination == source:
-        print("FAIL: destination is the currently running v0.28 script")
+        print("FAIL: destination is the currently running v0.29 script")
         return 1
     if destination.exists() and not args.force:
         print(f"FAIL: destination exists; add --force to replace: {destination.relative_to(root)}")
         return 1
     destination.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(source, destination)
-    print(f"MIGRATED {destination.relative_to(root)} from multi-window_M v0.28")
+    print(f"MIGRATED {destination.relative_to(root)} from multi-window_M v0.29")
     return 0
 
 
@@ -1405,6 +1531,18 @@ def cmd_brief(args: argparse.Namespace, root: Path) -> int:
     print("## allowed_paths")
     print("\n".join(allowed_lines))
     print()
+    print("## source_refs（来源 → R）")
+    refs = manifest.get("source_refs")
+    if not isinstance(refs, list) or not refs:
+        print("- (missing — 用户需求必须先写入 source_refs 再派工)")
+    else:
+        for item in refs:
+            if not isinstance(item, dict):
+                continue
+            mapped = item.get("maps_to")
+            mapped_text = ", ".join(str(value) for value in mapped) if isinstance(mapped, list) else "(none)"
+            print(f"- {item.get('id')}: {item.get('text') or ''} → {mapped_text}")
+    print()
     print("## R 项与验收")
     print("\n".join(format_requirements(manifest)))
     print()
@@ -1612,7 +1750,7 @@ def root_after_subcommand(tokens: List[str]) -> bool:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="multi-window_M v0.28 task gate",
+        description="multi-window_M v0.29 task gate",
         epilog="Place --root before the subcommand: taskctl.py --root <dir> status",
     )
     parser.add_argument(
@@ -1653,7 +1791,7 @@ def build_parser() -> argparse.ArgumentParser:
     hook = sub.add_parser("hook-audit", help="record a Stop-hook run and audit the current round")
     hook.add_argument("--source", choices=["manual", "codex-stop", "cursor-stop", "zcode-stop"], default="manual")
     hook.add_argument("--host", choices=["cursor", "codex", "zcode", "manual"])
-    migrate = sub.add_parser("migrate-project", help="copy this v0.28 taskctl into the project")
+    migrate = sub.add_parser("migrate-project", help="copy this v0.29 taskctl into the project")
     migrate.add_argument("--destination", default="scripts/taskctl.py")
     migrate.add_argument("--force", action="store_true", help="replace an existing destination")
     status_parser = sub.add_parser("status", help="show window and task states")
