@@ -2,21 +2,81 @@
 
 当前规则以 `SKILL.md` 的 `version` 字段为准。本文件只作历史说明，**不得当作当前规则引用**。
 
-## 0.34 — 独立验收正式派工（2026-09-13）
+## 0.34-dsh — DSH 分支起点（与 Codex 版合并后的 DSH 版）
 
-- 修复同一任务只能映射一个窗口的缺口：`round.tasks` 只表示 worker / owner，新增 `verifier_assignments` 表示独立验收窗。例如 `TASK-001` 可由 `C1` 实现、由 `C2` 验收，而 `owner` 始终是 C1。
-- `round-init` 支持 `--verifier TASK-001=C2`；已开 round 可由 M1 执行 `assign-verifier TASK-001 --window C2 --actor M1`。这不是 `reassign`，不会改 owner、attempt 或返工历史。
-- 对旧 round 的错误主路由，新增 `sync-worker-route TASK-001 --actor M1`：仅将 `round.tasks` 恢复到已有 owner，不能在验证开始后执行。
-- verifier `brief` 读取正式分配并显示验收窗与实现 owner；可选 `--window` 会校验所给窗号。verifier receipt 使用 `receipt C2 --role verifier`。
-- Full Gate / audit 新增 worker 与 verifier 路由校验：缺验收窗、验收窗等于 owner、验收报告 reviewer 不等于指派窗、或 worker 路由不等于 owner，均停止收口。
-- 新增 `test_verifier_assignments.py`，覆盖 C1 worker + C2 verifier 的完整 Gate、brief、状态、receipt、负向冲突与 round audit。
+本分支（`dsh-version`）以 Codex 版 0.34 为基线，合并 DSH 宿主专属能力，并**统一两支的命名**，使 `test_retry_ladder.py`（Codex 版）与本分支的 `test_block_staircase.py` **同时通过**。
 
-## 0.33 — 可审计返工与按需探索（2026-09-13）
+### 新增（DSH 专属）
+- **`packet` 就绪包**：`brief` 全部内容 + 读取预算 + 输出预算 + 归属确认；`--write` 落到 `.task/<task>/packet-<窗号>.md`。头部固定声明"**可再生成的派工副本、禁止手改、以 manifest/round 为准**"与"**读取预算是派工约束，不是安全权限边界**"。
+- **`manifest.read_budget`**：`{path, anchor?, lines|full, why}`；`lines` 只接受 `N-M` 或 `full`，`anchor` 给了就不能为空，其它形状 Full Gate 拒绝。
+- **`packet --check-anchors`**：只告警不阻塞的锚点检查，三类分开 —— `ANCHOR_FILE_NOT_FOUND`（文件不存在）/ `ANCHOR_NOT_FOUND`（真漂移）/ `ANCHOR_LOOSE`（仅格式变化）；粗匹配**跳过 Markdown 前导符号**取第一个有意义的词。**不进 Full Gate、不改状态**。
+- **DSH 证据账本**：`.task/dsh-runs.jsonl`（独立 400 行额度）+ `dsh-hook-bridge.py` + `dsh-hooks.example.json`；`--host dsh`、`--session`、`--agent`、`--intent pair|record`；`STOP_HOOK_SOURCES` 含 `dsh-stop` / `dsh-subagent-end`。
 
-- 同一卡点改为三阶：第 1 次原 owner 修复并复述打回项；第 2 次必须换不同正式 M/C owner；第 3 次 `HARD_STOP` 并写 BLOCKERS。总 `attempt` 不因换人重置。
-- `reopen` 必须给稳定 `block_id`；换根因须给 `--new-root-cause`。新增 `reassign`，`owner` 是当前负责人，`assignment_history` 保留不可覆盖的交接记录；无法换合格 owner → `REASSIGN_REQUIRED` / `NO_ELIGIBLE_REPLACEMENT_WORKER`，不得伪造换人。
-- 斥候从默认阶段改为按信息未知、冲突或过期触发；新增 `references/performance.md`，把短回执、有界读取、M1 状态驱动输出列为需同宿主 A/B 验证的性能试验，未削弱 Gate、独立验收或 Hook 三不。
-- M1 的长需求对齐、批次派工、异常处理、验收和最终预览仍是核心工作；压缩的是执行期间重复叙述，不是需求澄清。
+### 统一命名（两支兼容）
+| 概念 | 统一后的写法 | 兼容别名 |
+|---|---|---|
+| 换人命令 | `reassign --owner <窗号>` | （本分支原为 `attempt --owner`，保留） |
+| 失败账 | `block_history`（长度=失败次数，不含换人） | `block_attempts.history` |
+| 第 2 次 fail | 输出 `REASSIGN_REQUIRED`，`status=blocked`，`reassign_required=true`，写 `docs/BLOCKERS/<task>-<block>.md` | — |
+| 第 3 次 fail | 输出 `HARD_STOP`，`hard_stop=true`，退出码非 0 | — |
+| 改根因无证据 | `BLOCK_ID_CHANGE_REQUIRES_EVIDENCE` | — |
+| 阶梯上限 | `MAX_BLOCK_ATTEMPTS = 3`、`REASSIGN_ON_SAME_BLOCK_FAILURE = 2` | — |
+
+**关键不变**：换人**不写入** `block_history`（那是失败账，长度必须等于失败次数）；交接由 `assignment_history`（不可覆盖）承载。
+
+### 测试
+- 本分支：`selftest` 全绿（含 `test_packet.py` 16 项、`test_block_staircase.py` 18 项、`test_verifier_assignments.py` 18 项、`test_dsh_bridge.py` 16 项）。
+- Codex 版 `test_retry_ladder.py` 在本分支上**原样通过**（5/5）。
+
+## 0.34 — 一任务两职责：worker + 独立 verifier（2026-09）
+
+修复"实现窗与验收窗无法同时正式派工"的缺口（与 Codex 版 v0.34 语义对齐）。语义版本升到 0.34；目录名仍是 `multi-window-m-034`（语义版本不带点，隔离副本目录名不随语义版本改名）。
+
+- **两条路由分开存**：`round.tasks` 只表达**实现路由**（必须等于 `manifest.owner`）；新增 `round.verifier_assignments` 表达**独立验收路由**。一个任务同时有一个 owner 和一个 verifier，互不冒充。
+- 新增门禁 token：`VERIFIER_ASSIGNMENT_MISSING`（需要独立验收却没派 verifier）、`VERIFIER_ASSIGNMENT_CONFLICT`（verifier 非本轮窗 / 等于 owner 或 worker / 短路径多派 / `verify-report.reviewer` 不等于被指派 verifier）、`WORKER_ASSIGNMENT_CONFLICT`（实现路由 ≠ owner）。
+- **reviewer 必须等于被指派的 verifier**——不再"只要不是 worker 就放行"（防冒名验收）。
+- 新增命令 `assign-verifier TASK --window C2`（只写验收路由，**不动** `owner` / `attempt` / `block_id` / `assignment_history`；不是 `reassign`）与 `sync-worker-route TASK`（修复旧项目错误主路由；验收开始后拒绝改动）。
+- `brief --role verifier` 现在**输出被指派的 verifier 窗号 + 实现 owner/窗号**；未被指派、窗号给错、任务其实走短路径 → **拒绝生成**（`BRIEF_FAIL`），不再产生含糊指令。`brief` 新增 `--window` 断言。
+- `round-init` 新增 `--verifier TASK=WINDOW`；`receipt --role verifier`（必须在 `verifier_assignments` 内），回执写入 `receipts_by_role`，状态表把 C2 标为 `(verifier)`。
+- 新增 `scripts/test_verifier_assignments.py`（18 项正负向）。
+- **DSH 方向 A/B（本宿主专属，非 Codex 方案）**：新增 `taskctl.py packet` 就绪包 —— 简报全部内容 + **读取预算** + **输出预算** + 归属确认，`--write` 落到 `.task/<task>/packet-<窗号>.md`，窗口读这一份即可开工，不必翻 Registry、不必整篇读大件；`manifest.read_budget`（`N-M` 或 `full`，可选 `anchor` 锚点；其它形状门禁直接拒）渲染进 `brief`/`packet`。新增 `scripts/test_packet.py`（14 项正负向）。
+  就绪包头部固定声明：**可再生成的派工副本、禁止手改、以 manifest/round 为准**；**读取预算是派工约束，不是安全权限边界**。
+  `packet --check-anchors`：**只告警不阻塞**的锚点存在性检查，**不进 Full Gate、不改状态**；三类结果分开（`ANCHOR_FILE_NOT_FOUND` 文件不存在 / `ANCHOR_NOT_FOUND` 锚点漂移 / `ANCHOR_LOOSE` 仅格式变化），粗匹配**跳过 Markdown 前导符号**再取第一个有意义的词。新增用例至 16 项。
+  理由：用户只说一句「你是 Mn，请完成指示任务」，**开窗与传话已经是最省的状态**；剩下的成本在执行端（反复读大件）与 M1 侧（步数），读写量才是可降的部分。
+- **未变**：M1 唯一收口、M/C 窗号与临时 C 上限、卡点三级阶梯、Hook 三不、子代理不得充当正式 worker/verifier/owner 的边界。
+
+## 0.33 — 卡点阶梯 + 根因绑定 + 性能纪律（2026-09）
+
+三方对齐（用户 / DSH / Codex）后落地。**稳定性规则不动**：Full Gate、独立验收、状态机、Hook 证据、`.task/` 记录一条都不削。
+
+- **卡点上限 4 → 3**，写成三级阶梯：第 1 次 fail 复用原执行者并复述打回项；第 2 次 fail **换真正不同的负责窗口并更新 `owner`**；第 3 次 fail 硬停写 `BLOCKERS`。
+- **计数绑定根因**：`manifest.block_attempts`（`block_id` + `attempts` + `history`）。同一根因**不能靠改名重置**（改 `block_id` 不给 `--new-root` 直接拒绝）；`--new-root` 必须带证据。
+- **交接历史不可覆盖**：`manifest.assignment_history` 独立存放，改根因也不得抹掉。换人不能只在聊天里说。
+- **不得伪造换人**：宿主无合格替换者时写 `BLOCKERS` 的 `NO_ELIGIBLE_REPLACEMENT_WORKER`，交 M1 / 用户决定。
+- **两轴分离确认**：`attempt`（任务级，只驱动验收策略）与 `block_attempts`（卡点级，只驱动阶梯）互不混用。
+- 新增 `taskctl.py attempt` 子命令（`--block-id` / `--reason` / `--owner` / `--role` / `--new-root`，actor 为 worker|verifier）；`reopen` 必须带 `--block-id`。`status` 增加"卡点"列，`brief` 增加卡点预算行。
+- **性能纪律（压效率，不压验收）**：回执预算（上限只管叙述，命令输出原文必须完整保留）、有界读取（>100 行或 >4KB 只允许区间/片段）、M1 状态驱动输出（异常仍须立即处理）、斥候按需触发（判据是"知不知道文件在哪"）。
+- **派工纪律**：派工内容 = 原样贴 `brief` 生成物，M1 不另写说明。
+- **宿主适配（DSH）**：固定 `capability=default` + `collaboration=P`、不打开 `hook_supervision`；子代理**不得**担任正式工人 / 替换负责人 / 验收者；派子代理必须自带**任务胶囊**（见 `templates.md`）。
+- 新增 `scripts/test_block_staircase.py`（14 项正负向），并同步 `brief` / `status` / `task-gate.md` / `templates.md`。
+
+## 0.32 立即补丁 — 宿主标识合法化 + dsh 证据账本（不另占版本）
+
+- 技能名与文件夹统一为 `multi-window-m-034`。原 `multi-window-m-0-32` / `multi-window_M-0.32`
+  在宿主里会被当**标识符**解析（下划线、点号不是合法技能名字符），调用名因此对不上 `name` 字段。
+  调用改为 `/multi-window-m-034`。语义版本仍是 `0.32`，规则与状态机不变。
+- 新增第二本宿主证据账本 `.task/dsh-runs.jsonl`（dsh 专用，上限 400 行）。Cursor / Codex / Zcode
+  仍写 `.task/hook-runs.jsonl`（上限 100 行）。`audit-round` 读两本。
+- `hook-audit` 新增 `--host dsh`、`--session`、`--agent`、`--intent pair|record`，并接受
+  `dsh-stop` / `dsh-subagent-end` / `dsh-session-start` / `dsh-prompt` / `dsh-pre-tool` /
+  `dsh-post-tool` 六个 source。`STOP_HOOK_SOURCES` 增加前两个。
+- 新增 `scripts/dsh-hook-bridge.py`：把 dsh hooks 桥的 stdin 载荷翻成一次 `hook-audit` 调用。
+  dsh 的 hook 事件是一次性的，所以桥接**一次调用写完整 start/end 对**，`session_id` 即 `run_id`。
+  桥接恒退出码 0——dsh 的 `Stop` 是能阻塞的串行监听器且无连续阻塞上限，非 0 会被读成阻塞并自锁。
+- 新增 `scripts/dsh-hooks.example.json`（Claude Code 方言接线样例）与 `scripts/test_dsh_bridge.py`
+  （16 项正负向检查）。dsh 从「无 hook 宿主」段落里移出，改为已接线宿主；剩余那段改名
+  「无 hook 能力的宿主」，只指产品本身没有 hook 触发点的环境。
+- 不变项：`verification_policy()`、`transition` 表、失败 token、Hook 三不、`disable-model-invocation`。
 
 ## 0.32 — 窗口身份收口（2026-09-08）
 

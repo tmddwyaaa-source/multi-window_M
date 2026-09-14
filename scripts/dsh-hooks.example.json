@@ -1,0 +1,53 @@
+{
+  "_readme": [
+    "dsh hooks for the multi-window-m-034 skill (方案 B: dsh as a first-class host).",
+    "",
+    "Mount the Claude Code bridge, NOT the Codex bridge: only this dialect exposes",
+    "SubagentStop, which is the 'a delegated window ended' signal this skill needs.",
+    "The Codex bridge silently drops SubagentStart/SubagentStop.",
+    "",
+    "profile patch (C:\\Users\\user\\.dsh\\profiles\\web\\cordis.patch.yml):",
+    "  - name: '@deepseek-ai/dsh-hooks-claude-code'",
+    "    config:",
+    "      configPath: <absolute path to this file>",
+    "  (a relative configPath resolves from the directory that launched dsh)",
+    "",
+    "Every command below must exit 0. dsh's Stop hook is a serial listener whose",
+    "blocking result forces another model turn; stop_hook_active is always false and",
+    "the consecutive-block cap is not implemented, so a blocking hook would loop.",
+    "dsh-hook-bridge.py therefore always exits 0 and only writes evidence."
+  ],
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "py -3 \"${CLAUDE_PROJECT_DIR}\\.dsh-hooks\\dsh-hook-bridge.py\" --record --status \"${CLAUDE_PROJECT_DIR}\\.task\\dsh-hook-status.json\""
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "py -3 \"C:\\Users\\user\\.dsh\\skills\\multi-window-m-034\\scripts\\dsh-hook-bridge.py\""
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "matcher": "general-purpose",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "py -3 \"C:\\Users\\user\\.dsh\\skills\\multi-window-m-034\\scripts\\dsh-hook-bridge.py\""
+          }
+        ]
+      }
+    ]
+  }
+}

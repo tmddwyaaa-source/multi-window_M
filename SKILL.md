@@ -1,13 +1,13 @@
 ---
-name: multi-window_M-0.34
+name: multi-window-m-034
 description: >-
   多窗口分工：常驻仅 M1～M10；短期任务用临时窗 C1、C2（一轮最多 4 个）。
   窗号规则见正文「窗口身份」；不要发明第三套编号。
   旧项目 migrate-project 必须先备份并出迁移报告，写入 skill_version / taskctl_version / 迁移时间；
   --check 过基本门禁、Full Gate、Hook、负向后才继续开发。
   开局自报三套挡位；未确认禁止报加分。M1 唯一收口；查收以本窗重跑为准。
-  规则只描述当前行为；门禁细节见 references/task-gate.md。
-  斥候按信息未知/冲突/过期触发；同一卡点三次：复用→换负责人→硬停；中高风险任务另派 verifier。
+  规则只描述当前行为；门禁细节见 references/task-gate.md，宿主接线见 references/hooks.md。
+  斥候→主力→搜剿；同一卡点最多 3 次（第 2 次换负责人，第 3 次硬停）。
   在用户提到多窗口、M1、C1、查收、模块注册表、斥候/主力/搜剿时使用。
 version: "0.34"
 disable-model-invocation: true
@@ -15,24 +15,22 @@ disable-model-invocation: true
 
 # Multi-Window_M-0.34（常驻 M1～M10，临时 Cn）
 
-本文件夹名带版本号，是升级系列的隔离副本；`version` 字段也是 0.34。调用：`/multi-window_M-0.34`。历史版本说明见 [CHANGELOG.md](CHANGELOG.md)，不得当作当前规则。
+本文件夹名带版本号，是升级系列的隔离副本；`version` 字段也是 0.34。调用：`/multi-window-m-034`——宿主把 `/调用名` 与 `name` 字段逐字符比对（且只接受小写字母、数字、连字符），所以这里不带下划线也不带点。历史版本说明见 [CHANGELOG.md](CHANGELOG.md)，不得当作当前规则。
 
-复制即用话术见 [templates.md](templates.md)。G0～G3、manifest schema、`transition` 表见 [references/task-gate.md](references/task-gate.md)。宿主 Hook 接线只允许写在 [references/hooks.md](references/hooks.md)。
+复制即用话术见 [templates.md](templates.md)。G0～G3、manifest schema、`transition` 表见 [references/task-gate.md](references/task-gate.md)。宿主接线（Cursor / Codex / Zcode / dsh）只允许写在 [references/hooks.md](references/hooks.md)；dsh 的装/验/撤步骤见 [references/dsh-evidence.md](references/dsh-evidence.md)。
 
-## 本版问题与成功标准
+## 本版唯一问题与成功标准
 
-**问题：** 同一根因的返工曾只按总 attempt 记录，无法审计是否真的换负责人；同一任务的实现与独立验收又曾共用单值路由，导致 verifier 无法被正式派工。
+**问题：** 窗号禁忌散落多处、只写「禁止」、并曾把旧文件名前缀当成一种编号来教。
 
 **成功标准：**
 
-- 0.32 的窗号规则、状态机、门禁和 Hook 三不保持；合法窗号仍只有 `M1`～`M10` 与 `C`+数字。
-- `reopen` 以稳定的 `block_id` 记录同一根因：第 1 次原 owner 修复并复述打回项；第 2 次必须换不同的正式 M/C owner；第 3 次自动硬停并写 BLOCKERS。
-- `owner` 是当前负责人，不是新角色；`assignment_history` 不可覆盖，记录旧 owner → 新 owner、原因、block_id、失败次数。总 `attempt` 不因换人重置。
-- 实现派工与验收派工分离：`round.tasks` 只路由 worker / owner；`verifier_assignments` 将需要独立验收的任务路由到不同的正式 M/C 窗。C2 是 verifier，不接管 C1 的 owner。
-- 斥候不是默认步骤：仅在路径/影响未知、Registry 信息冲突或过期时受限只读；主力只做实现所需的最小确认，不重复大范围搜查。
-- M1 保留需求对齐、分批派工、异常处理、验收和收口；普通进展只在新决策或状态变化时汇报，不反复复述已确认背景。
+- SKILL 里「窗口身份（窗号）」是唯一权威；词法以 `taskctl.py` 的 `WINDOW_RE` / `valid_window()` 为准，本节是镜像。
+- 合法窗号只有 `M1`～`M10` 与 `C`+数字。不新开第三套编号。产出用普通文件名。
+- 铁规则 1～2、旧「编号」表、反模式、templates 头、frontmatter 只指向该节，不再复述禁令清单。
+- 行为不变：`valid_window()` 与 `round-init`（非法窗号 / 重复窗号 / 一轮临时 C 超过 4）照旧。不新增失败 token。
 
-0.31 的迁移治理、0.30 的挡位与 hook 证据、0.29 的 `source_refs` 仍是当前规则。门禁细节、`block_id` / 交接 / verifier schema 与命令见 [references/task-gate.md](references/task-gate.md)；性能试验见 [references/performance.md](references/performance.md)。
+0.31 的迁移治理、0.30 的挡位与 hook 证据、0.29 的 `source_refs` 仍是当前规则。本版不改状态机转移表或 Hook 三不。
 
 ## 核心认知（三条铁规则）
 
@@ -100,9 +98,16 @@ disable-model-invocation: true
 
 **出句（硬性，只约束 M1）：** 开局先报本窗挡位。只有判定为加分才准贴加分句。默认禁止说加分。不确定则前 3 轮内只问、禁止先报加分；未确认前按默认。前 3 轮没点名 → 本窗全程按默认。句式见 templates.md（加分句不是默认开场）。
 
-**M1 的真实工作顺序：** 用户可一次给出很长的需求。M1 先用必要的几轮对话对齐目标、必须项、限制、影响范围与验收，再由 M1 自主拆分任务和窗口批次；这段对齐不是可删的“冗长回报”。需求确认后，M1 写 Registry / manifest / round，跑 `brief`。用户按安排开 M/C 窗，只需说「我是 {窗号}，请完成指示任务」。工人按生成简报改文件并在本窗跑验收；用户把「{窗号} 已完成，请查收」送回 M1；M1 本窗重跑同一验收。整轮通过才集成、收口并打开游戏/网页预览供用户最终体验。没有「跑完自动交 M1」「失败自动重开」这一跳；新 M1 先跑 `handoff`，不要凭聊天记忆接班。
+**默认流程（所有宿主的起点）：** M1 派工写 Registry 与 manifest → 跑 `brief` 把生成物交给工人 → **用户**开 M/C 窗并说「我是 {窗号}」→ 工人按简报改文件并**自己在本窗终端跑验收命令** → **用户**对 M1 说「{窗号} 已完成，请查收」→ M1 **再跑同一条命令**。失败则 M1 打回，**用户**再到该工人窗说「按打回项继续」。没有「跑完自动交 M1」「失败自动重开」这一跳。新 M1 先跑 `handoff`，不要凭聊天记忆接班。
 
-**M1 状态驱动输出：** M1 应在需求对齐、正式派工、验收失败/风险升级、整轮收口时输出新的控制信息。普通完成信号不逐条重讲项目背景；完整证据留在磁盘，聊天只传结论、路径、关键片段和下一步。Gate fail、越界、需求冲突必须立即处理，不能等到轮次结束。
+**派工纪律（省 M1 字数的关键）：** 派工内容 = **原样贴 `brief` 生成物**，M1 不另写说明。`brief` 就是"各窗口应接收的指示"的生成器；M1 在这上面省下的字，属于被重发最多次的那一类字节。
+
+### 宿主适配：DSH（默认能力 + 协作挡 P）
+
+- `gears` 固定 `capability=default`、`collaboration=P`、`capability_confirmed=false`；**不要打开 `hook_supervision`**（本技能接线后仍按默认+P；详见 [references/hooks.md](references/hooks.md)）。
+- **子代理不得担任正式工人 / 替换负责人 / 验收者**：DSH 子代理读不到本 skill（`disable-model-invocation` 的必然结果），只可做受限斥候、检索、低风险辅助。派它时至少给一份极短**任务胶囊**（见 [templates.md](templates.md)）。
+- 因此 DSH 上第 2 级阶梯通常走不到：**没有合格的新执行者时写 `NO_ELIGIBLE_REPLACEMENT_WORKER`**，请 M1 / 用户开新窗，不得伪造换人。
+- 正式实施、独立验证、M1 收口，一律由**已加载本 skill、身份明确的 M/C 窗口**承担。
 
 ## 窗口角色（空间）
 
@@ -119,13 +124,11 @@ disable-model-invocation: true
 
 | 名称 | 允许 | 禁止 |
 |------|------|------|
-| **斥候** | 仅在路径/影响未知、信息冲突或过期时只读调查；列路径与可疑点、建议最小范围 | 改代码、声称已修好、改 Registry 为 done、贴大段代码或全文 |
+| **斥候** | 只读调查、列路径与可疑点、建议最小范围 | 改代码、声称已修好、改 Registry 为 done |
 | **主力** | 最小改动实现；交计划、diff、本回合终端原文 | 越界；自己标 done；打开网页预览；只交 PASS 摘要；指望「脚本替我生成交付文件」 |
 | **搜剿** | 只验收挑刺；施工窗没跑终端则 fail；M1 以本窗复跑为准 | 凭感觉放行；顺手改子模块；因没有子窗 stdout 打回 |
 
-**按需环路：** 已知路径和影响范围：主力（最小确认+实现）→搜剿。搜剿 fail 但原因明确：主力直接修复。只有原因未知、接口/文档冲突、或信息已过期时才插入斥候→主力→搜剿；斥候给出路径、文件:行号、约束和最小范围后，主力不得重新大范围搜查。
-
-**同一卡点三阶：** 用稳定 `block_id` 计数。第 1 次 fail：原 owner 先复述打回项再修；第 2 次 fail：换不同的正式 M/C owner，并写入交接历史；第 3 次 fail：脚本硬停、写 BLOCKERS，交 M1 / 用户决定。用户新增需求或可证明的新根因才可换 `block_id`，且必须记录新根因证据。完工话术：「{窗号} 已完成，请主导窗口查收。」
+环内：斥候→主力→搜剿（**斥候按需触发，见「性能纪律」第 4 条**）；搜剿 fail 则主力↔搜剿；**同一卡点最多 3 次**，第 2 次换真实负责人，第 3 次硬停写升级报告（见「长线治理」）。完工话术：「{窗号} 已完成，请主导窗口查收。」
 
 ## 对窗说话（详见「窗口身份」）
 
@@ -159,27 +162,67 @@ disable-model-invocation: true
 - Full Gate 会重跑可识别的验收命令、核 evidence 路径、有 Git 时核工作区。`manifest.json` / `rerun.json` / `verify-report.json` 不必列入工人 `changed_files`。
 - `--root` 必须放在子命令前面。常用命令与 schema 见 `references/task-gate.md`。
 - 一键自检（不依赖写死的本机路径）：`py -3 scripts/taskctl.py selftest`。
-- **派工简报：** `py -3 scripts/taskctl.py --root <项目根> brief TASK-xxx --role worker|scout|verifier [--window 窗号]`。独立验收先用 `assign-verifier TASK-xxx --window C2 --actor M1`，再生成 C2 的 verifier brief；简报会写明 C1 是实现 owner。M1 把终端输出原文贴给该窗或子代理，不要手写转述代替生成物。
+- **派工简报：** `py -3 scripts/taskctl.py --root <项目根> brief TASK-xxx --role worker|scout|verifier`。M1 把终端输出原文贴给该窗或子代理，不要手写转述代替生成物。
 - **接班简报：** `py -3 scripts/taskctl.py --root <项目根> handoff`。新 M1 先跑这一条再动手。不存在的 task 或非法 `--role` 会被拒绝。
 - **状态视图：** `py -3 scripts/taskctl.py --root <项目根> status --markdown --write`。写入 `docs/TASK-STATUS.md`。禁止手改该文件；不要在 Registry / RECEIPT-LOG 里另写一套 pending/done 当权威。
-- **同根因返工：** `reopen TASK-xxx --block-id BLOCK-... --reason "..." --actor M1`。第 2 次同 block 可同时给 `--new-owner C1`，或先触发 `REASSIGN_REQUIRED` 后用 `reassign TASK-xxx --owner C1 --reason "..." --actor M1`。负责人必须是不同、已在本轮名单中的正式 M/C 窗口；换人不重置 `attempt` / `block_id`。第 3 次同 block → `HARD_STOP` 与 `docs/BLOCKERS/`，不可继续假装重试。
 - **需求覆盖：** 用户每条新需求写入 `source_refs`（或 round 的 `source_requirements`）并映射到带 `verify`/`verify_cmd` 的 R 项。缺映射 → `REQUIREMENT_COVERAGE_FAIL`，停止收口。禁止只改聊天话术。
 - **挡位：** `round.json` 的 `gears` 记录能力挡与协作挡。未写 = 默认 + P。未确认的 bonus / A → `GEAR_VIOLATION`。
-- **Hook 证据：** `hook_supervision=true` 时，收口必须有宿主 stop 的 start/end 对。缺日志或只有 manual → `HOOK_EVIDENCE_MISSING`。无 hook 宿主不要打开 `hook_supervision`，以免卡死最低挡。
-- **独立验收派工：** 新 round 的 `verifier_assignments` 是 `TASK-xxx: Cn/Mn`；中高风险、`attempt >= 2` 或 `verification_required` 的任务必须有不同于 owner 的 verifier。缺失 / 同窗 / 路由与 owner 冲突 → `VERIFIER_ASSIGNMENT_MISSING` / `*_CONFLICT`，停止收口。旧 round 曾误把任务路由到 verifier 时，M1 可用 `sync-worker-route TASK-xxx --actor M1` 仅将 worker 路由复原为现有 owner；它不换 owner、不重置 attempt。verifier receipt 用 `receipt C2 --role verifier`。
+- **Hook 证据：** `hook_supervision=true` 时，收口必须有宿主 stop 的 start/end 对：Cursor / Codex / Zcode 看 `hook-runs.jsonl`，dsh 看 `dsh-runs.jsonl`（见 `references/hooks.md` 与 `references/dsh-evidence.md`）。缺日志或只有 manual → `HOOK_EVIDENCE_MISSING`。只有**产品本身没有 hook 能力**的宿主才不要打开 `hook_supervision`，以免卡死最低挡；dsh 已接线，不在其列。
 - **子代理绑定：** 派出的子代理写入 `subagents`（`task_id` / `window` / `allowed_paths` / `run_id`）。同文件并发、重复、工人兼 verifier、越权 → `PARALLEL_FAIL`。
 
 旧项目升级：用**已安装的本技能脚本**执行 `migrate-project --destination scripts/taskctl.py --force`（先备份再覆盖），再跑 `migrate-project --check`。未出现 `MIGRATE_READY` 前不要开发新功能。项目记录在 `.task/skill-lock.json`，报告在 `docs/MIGRATE-REPORT.md`。
 
 ## Hook 边界
 
-Hook 只是触发器，不是验收结论。有 `.task/` 时 `hook-audit` 写 `.task/hook-runs.jsonl`（`start`/`end` 成对，同一 `run_id`，最多 100 行，应 gitignore）。没有 `.task/` 时静默跳过。
+Hook 只是触发器，不是验收结论。有 `.task/` 时 `hook-audit` 写证据账本：Cursor / Codex / Zcode 写 `.task/hook-runs.jsonl`（`start`/`end` 成对，同一 `run_id`，最多 100 行）；dsh 写 `.task/dsh-runs.jsonl`（独立额度 400 行）。两个账本都要 gitignore。没有 `.task/` 时静默跳过。
 
-`round.json` 的 `hook_supervision` 默认为 false。为 true 时，M1 跑 `audit-round` 收口必须看到 `source` 为 `cursor-stop` / `codex-stop` / `zcode-stop` 的完整一对；`--source manual` 或只跑 `audit-round` **不算** hook 证据。未声明监督时，缺 jsonl 不卡死最低挡，但也不得把缺日志当成完成证据。
+`round.json` 的 `hook_supervision` 默认为 false。为 true 时，M1 跑 `audit-round` 收口必须看到完整一对，`source` 为 `cursor-stop` / `codex-stop` / `zcode-stop` / `dsh-stop` / `dsh-subagent-end`；`--source manual` 或只跑 `audit-round` **不算** hook 证据。未声明监督时，缺 jsonl 不卡死最低挡，但也不得把缺日志当成完成证据。
 
 Hook **三不**：不改状态、不派工、不标 done。失败只记账。即使 Hook 输出成功，也不能替代 M1 本窗重新运行 Full Gate。
 
 宿主差异（事件名、适配器、能力确认测试命令）只写在 `references/hooks.md`。本文件与 `taskctl.py` 不按宿主名分支行为。
+
+## 派工用「就绪包」（DSH 方向，0.34）
+
+用户只说一句「你是 Mn，请完成指示任务」，所以**窗口要读的东西必须自己就绪、且足够短**。M1 派工时用：
+
+```text
+py -3 scripts/taskctl.py --root <项目根> packet TASK-001 --role worker --write
+```
+
+产出 = 简报全部内容 **+ 读取预算 + 输出预算 + 归属确认**，并由 `--write` 落到 `.task/TASK-001/packet-<窗号>.md`。窗口读这一份即可，**不必再翻 Registry，也不必整篇读设计表**。
+
+**读取预算**写在 `manifest.read_budget`，M1 派工前必须补：
+
+```json
+"read_budget": [
+  {"path": "docs/设计表.md", "anchor": "## 2.4 升级池", "lines": "68-105", "why": "只改池"},
+  {"path": "docs/GAME-SPEC.md", "lines": "full", "why": "短文件"}
+]
+```
+
+- `lines` 只接受 `N-M` 或 `full`，其它值门禁直接拒（`lines must be 'N-M' or 'full'`）；`anchor` 可选，但给了就不能为空；
+- **`anchor` 的作用**：行号会漂移，锚点让窗口确认自己读的是**正确章节**（代码文件可用函数名/类名）；
+- 没声明时，就绪包会提示"未声明 read_budget，M1 派工前应补上"；
+- **`read_budget` 是「减少无效上下文的派工约束」，不是「可完全证明的安全权限边界」**——它管的是"别乱读大件"，不是权限隔离；
+- **`packet` 是可再生成的派工副本，禁止手改**：状态与约束一律以 `.task/` 的 manifest / round 为准。
+
+**行号/锚点由 M1 查，不许向用户要**：M1 负责"确保读取范围已定位并写入"；可由斥候辅助定位；**绝不要求用户提供行号**（用户只描述改哪一块）。
+
+**锚点漂移只告警，不阻塞**（Codex 结论：先别做成门禁，用真实项目看它是否真会漂移）：
+
+```text
+py -3 scripts/taskctl.py --root <项目根> packet TASK-001 --role worker --check-anchors
+```
+
+- 默认**不检查**；加 `--check-anchors` 时按三类分开报告，便于以后统计"锚点漂移率"不失真：
+  - `ANCHOR_FILE_NOT_FOUND` —— **文件不存在**（不是锚点漂移，先确认路径）
+  - `ANCHOR_NOT_FOUND` —— 锚点确实找不到（**这才是漂移信号**，让 M1 重新定位后再派工）
+  - `ANCHOR_LOOSE` —— 只是格式变了，粗匹配仍命中，人工确认即可
+- 粗匹配会**跳过 Markdown 前导符号**（`#`、`>`、`-`、`*`）再取第一个有意义的词，所以 `## 标题` 不会拿 `##` 去比对；
+- **不进入 Full Gate、不改变任务状态**——它属于效率设计，不是监督。
+
+**为什么值得做**：读进来的内容之后每一步都会被重发（实测 assistant 输出占重发体积 93.5%），所以"少读"是 DSH 上最直接的降本手段。
 
 ## 自测证据
 
@@ -205,9 +248,84 @@ Hook **三不**：不改状态、不派工、不标 done。失败只记账。即
 
 **亲自微修订**：未经点名且未经同意，禁止改子模块实现。未获同意则派 M 或 C，本窗只交 Registry 与开工话术。
 
-## 长线治理：循环渐进 + 同一卡点上限 3
+## 一任务两职责：worker 与 verifier（0.34）
 
-每一环：唯一目标、成功标准、证据（diff + 本回合终端原文）、存档点。`block_id` 代表同一根因，不是任务总失败次数：第 1 次原 owner 修复，第 2 次换不同 owner，第 3 次硬停并写 `docs/BLOCKERS/`。旧 owner 的责任和新 owner 的交接都保留在 manifest 的 `assignment_history`；不得只在聊天里说“换人”。没有合格新 owner 时，写 `NO_ELIGIBLE_REPLACEMENT_WORKER` 并交 M1 / 用户决定。所有任务都必须过最低门禁；规模小不等于免检。
+一个任务可以同时有**一个实现负责人**和**一个独立验收人**，两者必须可区分、可审计、不可互相冒充。M1 仍是唯一收口者。
+
+```text
+TASK-001
+├─ owner / worker：C1   ← 负责实现；owner 始终是 C1
+└─ verifier：C2        ← 只独立验收，不接管实现
+M1：唯一收口者
+```
+
+**两条路由分开存，不要混：**
+
+| 路由 | 位置 | 含义 |
+|---|---|---|
+| 实现路由 | `round.json` 的 `tasks` | `C1: ["TASK-001"]`。**该窗必须等于 `manifest.owner`** |
+| 验收路由 | `round.json` 的 `verifier_assignments` | `{"TASK-001": "C2"}`。仅需要独立验收的任务才有 |
+
+**权限边界：**
+
+| 单位 | 允许 | 禁止 |
+|---|---|---|
+| worker（C1） | 改 `allowed_paths` 内业务文件；写 worker 报告；推进到 `worker_done` | 写 verify 报告；自己标 done；当 verifier |
+| verifier（C2） | 只读检查；写 `verify-report.json`；推进 `verifying → verified` | 改业务实现；接管 owner；验收自己的实现 |
+| M1 | 派 C1/C2；本窗重跑 Gate；`integrated → done` | 替 C1 偷做实现；凭口头完成收口 |
+
+状态路径不变：`C1: in_progress → worker_done`；`C2: verifying → verified`；`M1: verified → integrated → done`。**`verified` ≠ `done`。**
+
+```text
+py -3 scripts/taskctl.py --root <项目根> round-init ROUND-001 C1 C2 --task C1=TASK-001 --verifier TASK-001=C2
+py -3 scripts/taskctl.py --root <项目根> assign-verifier TASK-001 --window C2 --actor M1
+py -3 scripts/taskctl.py --root <项目根> brief TASK-001 --role verifier --window C2
+py -3 scripts/taskctl.py --root <项目根> receipt C1
+py -3 scripts/taskctl.py --root <项目根> receipt C2 --role verifier
+```
+
+`assign-verifier` **不是** `reassign`：它只写验收路由，**不改** `owner` / `attempt` / `block_id` / `assignment_history`。旧项目主路由挂错时用 `sync-worker-route TASK-001`（验收开始后不允许再改）。
+
+门禁 token：`VERIFIER_ASSIGNMENT_MISSING`（没派 verifier）、`VERIFIER_ASSIGNMENT_CONFLICT`（verifier 非本轮窗 / 等于 owner 或 worker / reviewer 冒名）、`WORKER_ASSIGNMENT_CONFLICT`（`round.tasks` 的 worker ≠ `manifest.owner`）。
+
+## 长线治理：循环渐进 + 卡点上限 3（三级阶梯）
+
+每一环：唯一目标、成功标准、证据（diff + 本回合终端原文）、存档点。**所有任务都必须过最低门禁；规模小不等于免检。**
+
+**同一卡点（同一根因）的三级阶梯** —— 这不是"节奏偏好"，是跨宿主稳定性规则：防止同一错误理解被无限重复。
+
+| 第几次 fail | 动作 | 记录要求 |
+|---|---|---|
+| 第 1 次 | **复用原执行者**，并让它先复述打回项再动手 | 计入同一 `block_id` |
+| 第 2 次 | **换真正不同的负责窗口**（或独立执行上下文），**并更新 `owner`** | 追加不可覆盖的 `assignment_history` |
+| 第 3 次 | **硬停**：写 `docs/BLOCKERS/`，点名下一步 {窗号} 的【斥候\|主力\|搜剿】或 M1 / 用户 | `block_attempts` 到上限 |
+
+**计数必须绑定 `block_id`（根因）**：
+- 同一根因**不能靠改名重置**——改了 `block_id` 又不给证据，`taskctl` 直接拒绝；
+- 用户新增需求，或能证明的新根因 → `--new-root --reason <证据>` 才开新卡点；
+- **换人不能只在聊天里说**：必须更新 `owner`，否则等于"换了人却没换记录"；
+- **宿主没有合格的新执行者时不得伪造换人**：写 `BLOCKERS` 的 `NO_ELIGIBLE_REPLACEMENT_WORKER`，交 M1 / 用户决定（DSH 子代理正处在这个情况，见 [references/dsh-evidence.md](references/dsh-evidence.md)）。
+
+命令：
+
+```text
+py -3 scripts/taskctl.py --root <项目根> attempt TASK-001 --block-id B1 --reason "<失败证据>" --actor worker
+py -3 scripts/taskctl.py --root <项目根> attempt TASK-001 --block-id B1 --reason "<打回项>" --actor worker --owner C1
+```
+
+## 性能纪律（0.33 新增，跨宿主）
+
+Token 放大的大头**不是门禁**（实测账本/hook 事件 < 0.1%），而是**步数 × 模型自己写的文字量**（实测 assistant 输出占重发体积 93.5%）。以下四条只压效率，不动验收：
+
+1. **回执预算**：成功回执 10～20 行，格式固定为「状态 + 路径 + 关键行号/片段 + 验收命令 + **命令输出原文** + 未决项」。**上限只管叙述，命令输出原文必须完整保留**（它是证据）。失败/阻塞可超限，但须说明原因。
+2. **有界读取**：任何 > 100 行或 > 4KB 的文件，只允许"行号区间 / 关键词片段"读取；整篇读取要写明理由。
+3. **M1 状态驱动输出**：M1 只在**新决策或状态变化**时输出控制信息，不重讲已确认背景；但 **Gate fail、越界、需求冲突等异常必须立即处理，不能等到轮次结束**。M1 的需求对齐、派工、验收、收口**不压缩**。
+4. **斥候按需触发**：判据是"**我知不知道文件在哪**"，不是"任务大不大"。
+   - 已知路径 + 已知影响范围 + 信息未过期 → **不开斥候，直接主力**（但仍受第 2 条有界读取约束）；
+   - 已知路径 + 影响范围不确定 → **微型斥候**：只查关键依赖，短回报；
+   - 路径未知 / 注册表过期 / 文档与现状冲突 / 陌生项目 → **受限斥候**：只读、限长、给路径与风险。
+
+**注意（防矫枉过正）**：信息未知时跳过斥候会更贵——主力的探索是"读+写"混合的，过程留在主线被反复重发，还可能已经改错文件。斥候的成本是**一次**，主力乱翻的成本是**每次重发都在付**。
 
 ## 项目文档
 
@@ -238,8 +356,8 @@ M1 定标准 → 常驻骨架模块先过查收 → 其余常驻 M 可并行；�
 | 原则 | 说明 |
 |------|------|
 | 同一文件只让一个窗主改 | 边界写死路径 |
-| Phase 2 修复 | 第 1 次同 block 复用原 owner；第 2 次换已有 M2～M10 或开临时 C；窗号见「窗口身份」 |
-| 修 Bug | 可叠加 `/bugfix`；仍受同一卡点 3 次约束 |
+| Phase 2 修复 | 复用已有 M2～M10 或开临时 C；窗号见「窗口身份」 |
+| 修 Bug | 可叠加 `/bugfix`；仍受同一卡点 3 次阶梯约束（见「长线治理」） |
 | 配置冲突 | M1 合并 |
 
 ## 反模式

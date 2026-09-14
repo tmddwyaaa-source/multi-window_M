@@ -1,4 +1,4 @@
-"""v0.34: migrate-project still backs up, reports, locks; version lock is 0.34."""
+"""v0.34: migrate-project still backs up, reports, locks; version lock is 0.33."""
 from __future__ import annotations
 
 import json
@@ -93,7 +93,7 @@ def main() -> int:
         backup.is_file() and backup.read_bytes() == old_bytes and dest.read_bytes() != old_bytes,
         f"backup={backup} lock={lock}",
     )
-    expect("M-pos-force-is-034", b"v0.34" in dest.read_bytes(), dest.read_text(encoding="utf-8")[:80])
+    expect("M-pos-force-is-current", b"v0.34" in dest.read_bytes(), dest.read_text(encoding="utf-8")[:80])
 
     code, out = run(
         ["--root", str(root), "migrate-project", "--destination", "scripts/taskctl.py", "--force"],

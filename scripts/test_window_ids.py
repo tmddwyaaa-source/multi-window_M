@@ -1,4 +1,4 @@
-"""v0.34: window ids stay WINDOW_RE; round-init still caps temporary C at 4."""
+"""v0.33: window ids stay WINDOW_RE; round-init still caps temporary C at 4."""
 from __future__ import annotations
 
 import os
@@ -67,9 +67,36 @@ def main() -> int:
         expect(f"W-doc-templates-no-{token}", token not in templates, token)
     expect(
         "W-doc-templates-ordinary-filename",
-        "batch-02.json" in templates and "/multi-window_M-0.34" in templates,
+        "batch-02.json" in templates and "/multi-window-m-034" in templates,
         templates[:200],
     )
+    # The invocation token must be byte-identical to the frontmatter name and to
+    # the directory name: hosts match `/name` against `name` exactly, and only
+    # accept lowercase letters, digits, and hyphens.
+    name_line = next(
+        (line for line in skill.splitlines() if line.startswith("name:")), ""
+    )
+    declared = name_line.split(":", 1)[1].strip() if ":" in name_line else ""
+    expect("W-doc-name-is-kebab", declared == "multi-window-m-034", declared)
+    # 宿主按文件夹发现技能、按 `name` 调用：**安装到宿主技能目录时两者必须一致**。
+    # 发布仓库的根目录叫 multi-window_M（带下划线/大写，不是 kebab），不可能相等，
+    # 所以这里在仓库里降级为提示；可用 MULTI_WINDOW_ACCEPT_DIR 显式声明允许的目录名。
+    accepted_dirs = {declared} | {
+        item.strip()
+        for item in (os.environ.get("MULTI_WINDOW_ACCEPT_DIR") or "").split(",")
+        if item.strip()
+    }
+    if SKILL_ROOT.name in accepted_dirs:
+        expect("W-doc-name-matches-folder", True, SKILL_ROOT.name)
+    else:
+        print(
+            f"NOTE W-doc-name-matches-folder: 目录名 {SKILL_ROOT.name!r} != 技能名 {declared!r}"
+            "；安装到宿主技能目录时必须一致（发布仓库允许不一致）"
+        )
+    legacy = "multi-window_M-0.33"
+    hooks = (SKILL_ROOT / "references" / "hooks.md").read_text(encoding="utf-8")
+    for label, body in (("skill", skill), ("templates", templates), ("hooks", hooks)):
+        expect(f"W-doc-{label}-no-legacy-invocation", legacy not in body, legacy)
 
     identity = skill.split("## 窗口身份（窗号）", 1)[1]
     after_identity = identity.split("\n## ", 1)[1] if "\n## " in identity else ""
@@ -115,7 +142,7 @@ def main() -> int:
         out,
     )
 
-    print("ALL v0.34 WINDOW ID CHECKS PASSED")
+    print("ALL v0.33 WINDOW ID CHECKS PASSED")
     return 0
 
 

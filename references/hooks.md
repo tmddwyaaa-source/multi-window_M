@@ -4,19 +4,19 @@
 
 ## 重要边界
 
-`taskctl.py` 是检查逻辑；hook 只是生命周期触发器。`hook-audit` 写入 `.task/hook-runs.jsonl`：每次触发一对 `start`/`end`，带同一 `run_id`。不自动创建验证 agent，也不替 M1 标记 `done`。Hook 失败只记账。没有 `.task/` 时静默跳过。
+`taskctl.py` 是检查逻辑；hook 只是生命周期触发器。`hook-audit` 写证据账本，每次触发一对 `start`/`end`，带同一 `run_id`。不自动创建验证 agent，也不替 M1 标记 `done`。Hook 失败只记账。没有 `.task/` 时静默跳过。
 
-该 jsonl **最多 100 行**，应加入 `.gitignore`，不要提交进 Git。
+账本按宿主分文件：Cursor / Codex / Zcode 写 `.task/hook-runs.jsonl`（**最多 100 行**）；dsh 写 `.task/dsh-runs.jsonl`（**最多 400 行**）。两个都加入 `.gitignore`，不要提交进 Git。
 
 **能力确认（所有宿主同一标准）：** 新窗口用下面该宿主段的测试命令跑一次。本窗实际收到结果才算确认。未确认一律默认，禁止报加分。确认便宜，纪律不松：加分后仍须本窗重跑验收，仍须 `transition` 收口。
 
 ## Codex
 
-Codex 使用项目级 `.codex/hooks.json` 或用户级 `~/.codex/hooks.json`。建议先使用项目级配置。把 `{SKILL_ROOT}` 换成本机 Codex 技能目录（升级系列隔离副本为 `...\skills\multi-window_M-0.34`）：
+Codex 使用项目级 `.codex/hooks.json` 或用户级 `~/.codex/hooks.json`。建议先使用项目级配置。把 `{SKILL_ROOT}` 换成本机 Codex 技能目录（升级系列隔离副本为 `...\skills\multi-window-m-034`）：
 
 ```json
 {
-  "description": "multi-window_M task audit",
+  "description": "multi-window-m-034 task audit",
   "hooks": {
     "Stop": [
       {
@@ -63,7 +63,7 @@ Codex 使用项目级 `.codex/hooks.json` 或用户级 `~/.codex/hooks.json`。�
 py -3 <SKILL_ROOT>\scripts\taskctl.py --root <工作区> hook-audit --source cursor-stop --host cursor
 ```
 
-隔离副本的 `SKILL_ROOT` 例：`C:\Users\user\.cursor\skills\multi-window_M-0.34`。
+隔离副本的 `SKILL_ROOT` 例：`C:\Users\user\.cursor\skills\multi-window-m-034`。
 
 - 不要设 `failClosed`。适配器始终退出码 0。
 - 诊断日志：`C:\Users\user\.cursor\hooks\last-cursor-stop.log`（无 `.task/` 也写）。
@@ -82,9 +82,60 @@ py -3 <SKILL_ROOT>\scripts\taskctl.py --root <项目根> hook-audit --source zco
 
 **能力确认测试命令：** 派一个子代理，令其只回复 `CAP-OK`。本窗收到该原文 → 「子代理回传」已确认。另测：能否引用旧对话原文。能力确认状态：子代理回传已实测（2026-09-07）；关联旧对话原文待闭环。
 
-## 无 hook 宿主
+## dsh（DeepSeek Harness）
 
-暂不为 dsh 配置。人工：`py -3 scripts/taskctl.py audit-round`。无 hook 不等于不能收口：走默认流程，**不要打开** `hook_supervision`，以免 `HOOK_EVIDENCE_MISSING` 卡死最低挡。也不要把缺 hook 日志当成完成证据。
+dsh 自己没有 hook 方言。它内置两个桥，用来在 agent run 中执行**别的工具**的 `hooks.json` 命令 hook：
+
+| 桥 | 包名 | 能用的事件 |
+|----|------|-----------|
+| Claude Code 桥 | `@deepseek-ai/dsh-hooks-claude-code` | `SessionStart`、`UserPromptSubmit`、`PreToolUse`、`PostToolUse`、`Stop`、**`SubagentStart`、`SubagentStop`** |
+| Codex 桥 | `@deepseek-ai/dsh-hooks-codex` | 只有前五个；`Subagent*` 会被**静默丢弃** |
+
+**必须选 Claude Code 桥**：`SubagentStop` 是「派出去的执行者结束了」这个信号，正是本技能窗协议的第二条腿；Codex 桥拿不到它。
+
+**挂在哪：** hook 桥是一个 profile 插件，必须挂进你启动的那个 profile。web profile 的用户 patch 层（`~/.dsh/profiles/web/cordis.patch.yml`）加一行即可：
+
+```yaml
+- name: '@deepseek-ai/dsh-hooks-claude-code'
+  config:
+    configPath: C:\Users\user\.dsh\skills\multi-window-m-034\scripts\dsh-hooks.example.json
+```
+
+`configPath` 在进程启动时读一次；相对路径按**启动 dsh 的目录**解析，所以这里用绝对路径最稳。桥没挂时 dsh 照样启动，只是没有 hook 证据。挂完要重启 dsh（bundle / 插件行变更不热重载）。
+
+**事件 → 账本：** 用 `scripts/dsh-hook-bridge.py` 接线，桥把该事件的 JSON 载荷从 stdin 交给它：
+
+```text
+payload {"hook_event_name":"...","session_id":"...","cwd":"...","agent_id":"..."}
+  -> py -3 <SKILL_ROOT>\scripts\dsh-hook-bridge.py
+  -> taskctl.py --root <cwd> hook-audit --source dsh-* --host dsh --session <session_id>
+  -> .task/dsh-runs.jsonl
+```
+
+| 桥事件 | source | 写法 | 含义 |
+|--------|--------|------|------|
+| `Stop` | `dsh-stop` | 完整 start/end 对 | M 窗的回合结束；P 挡下的主机侧证据 |
+| `SubagentStop` | `dsh-subagent-end` | 完整 start/end 对 | 子代理结束；A 挡下最强证据（带真实 `agent_id`） |
+| `SessionStart` | `dsh-session-start` | 单条 `record` | 该窗已开工 |
+| `UserPromptSubmit` / `PreToolUse` / `PostToolUse` | `dsh-prompt` / `dsh-pre-tool` / `dsh-post-tool` | 单条 `record` | 细粒度观测，默认不挂 |
+
+`session_id` 就是账本的 `run_id`——这样 M1 能把一次 stop 对到**是哪个窗口**停下来的。
+
+**dsh 特有的一条硬约束：** dsh 的 hook 事件是一次性的，不像 Cursor 有独立的 end 触发。所以桥接**一次调用就写完整 start/end 对**（`--intent pair`，dsh 源的默认行为）。只有 `SessionStart` 这类低价值事件用 `--intent record` 写单条。`hook_supervision=true` 时，看到 `dsh-stop` 或 `dsh-subagent-end` 的完整一对即视为满足。
+
+**恒退出码 0：** dsh 的 `Stop` 是能阻塞的串行监听器，且 `stop_hook_active` 恒为 `false`、连续阻塞上限未实现——非 0 退出会被读成阻塞决策，从而**每一步都强制再来一轮**，自锁。所以桥接脚本永远退出 0，只写证据；裁决仍在 `taskctl.py`。
+
+**没接桥时：** 走「无 hook 能力的宿主」那节，**不要打开** `hook_supervision`。dsh 的插件/hook 出问题不会让 dsh 起不来（桥是外部进程），但也不要因此把缺日志当完成证据。
+
+**接线 / 验收 / 回滚步骤见 [dsh-evidence.md](dsh-evidence.md)。**
+
+**能力确认测试命令：** 派一个子代理，令其只回复 `CAP-OK`。本窗收到该原文 → 「子代理回传」已确认。另测：能否引用旧对话原文。**能派子代理本身不是加分。** 能力确认状态：待实测。
+
+## 无 hook 能力的宿主
+
+指**产品本身不提供可用的 hook 触发点**的宿主；dsh 不在此列（见上一节的 Claude Code 桥）。
+
+人工兜底：`py -3 scripts/taskctl.py audit-round`。无 hook 不等于不能收口：走默认流程，**不要打开** `hook_supervision`，以免 `HOOK_EVIDENCE_MISSING` 卡死最低挡。也不要把缺 hook 日志当成完成证据。
 
 **能力确认测试命令：** 无。按默认，不要报加分。
 

@@ -81,6 +81,40 @@ def write_project(root: Path) -> None:
     (root / ".task" / "hook-runs.jsonl").write_text(json.dumps(hook) + "\n", encoding="utf-8")
 
 
+def write_verifiable_project(root: Path) -> None:
+    """medium 风险 → 需要独立验收；C1 实现、C2 验收。"""
+    (root / "src").mkdir(parents=True)
+    (root / ".task" / "TASK-001").mkdir(parents=True)
+    (root / "src" / "ping.py").write_text('PING = "ok"\n', encoding="utf-8")
+    manifest = {
+        "task_id": "TASK-001",
+        "title": "ping constant",
+        "owner": "C1",
+        "track": "feature",
+        "risk": "medium",
+        "attempt": 0,
+        "status": "worker_done",
+        "allowed_paths": ["src/ping.py"],
+        "requirements": [{"id": "R1", "text": "PING is ok", "verify": "py -3 -c pass"}],
+        "source_refs": [{"id": "S1", "text": "PING is ok", "maps_to": ["R1"]}],
+    }
+    round_data = {
+        "round_id": "ROUND-002",
+        "expected_windows": ["C1", "C2"],
+        "receipts": [],
+        "window_status": {"C1": "worker_done", "C2": "pending"},
+        "tasks": {"C1": ["TASK-001"], "C2": []},
+        "verifier_assignments": {"TASK-001": "C2"},
+        "check_requested": False,
+    }
+    (root / ".task" / "TASK-001" / "manifest.json").write_text(
+        json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
+    )
+    (root / ".task" / "round.json").write_text(
+        json.dumps(round_data, indent=2) + "\n", encoding="utf-8"
+    )
+
+
 def main() -> int:
     empty = Path(tempfile.mkdtemp(prefix="v027-empty-"))
     code, out = run(["--root", str(empty), "brief", "TASK-001", "--role", "worker"], cwd=empty)
@@ -128,8 +162,51 @@ def main() -> int:
     )
     code, out = run(["--root", str(root), "brief", "TASK-001", "--role", "verifier"], cwd=root)
     expect(
-        "B-neg-verifier-on-short-path",
-        code != 0 and "independent verification is not required" in out,
+        "B-neg-verifier-brief-rejected-on-short-path",
+        code != 0 and "短路径" in out and "BRIEF_FAIL" in out,
+        out,
+    )
+
+    # 一任务两职责：C1 实现 + C2 独立验收（v0.34 对齐）
+    verified_root = Path(tempfile.mkdtemp(prefix="v034-brief-"))
+    write_verifiable_project(verified_root)
+
+    code, out = run(["--root", str(verified_root), "brief", "TASK-001", "--role", "verifier"], cwd=verified_root)
+    expect(
+        "B-pos-verifier-brief",
+        code == 0
+        and "role=verifier" in out
+        and "窗号: C2" in out
+        and "当前职责: verifier / 独立验收" in out
+        and "实现 owner: C1" in out
+        and "实现窗号: C1" in out
+        and "verify-report.json" in out,
+        out,
+    )
+    code, out = run(
+        ["--root", str(verified_root), "brief", "TASK-001", "--role", "verifier", "--window", "C1"],
+        cwd=verified_root,
+    )
+    expect(
+        "B-neg-verifier-wrong-window",
+        code != 0 and "VERIFIER_ASSIGNMENT_CONFLICT" in out,
+        out,
+    )
+    code, out = run(
+        ["--root", str(verified_root), "brief", "TASK-001", "--role", "worker", "--window", "C2"],
+        cwd=verified_root,
+    )
+    expect(
+        "B-neg-worker-wrong-window",
+        code != 0 and "WORKER_ASSIGNMENT_CONFLICT" in out,
+        out,
+    )
+    code, out = run(
+        ["--root", str(verified_root), "brief", "TASK-001", "--role", "worker"], cwd=verified_root
+    )
+    expect(
+        "B-pos-verifiable-task-worker-sees-owner-window",
+        code == 0 and "窗号: C1" in out and "独立验收" in out,
         out,
     )
 
