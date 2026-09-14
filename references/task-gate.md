@@ -9,6 +9,8 @@
 | 任务状态 | `.task/TASK-xxx/manifest.json` 的 `status` | 仅 `taskctl.py transition` / `reopen` | 任务是否走完合法路径 |
 | 窗口状态 | `.task/round.json` 的 `window_status` | 派工与 receipt 流程 | 该窗是否已交查收信号 |
 
+0.34 将同一任务的两种正式职责拆开：`manifest.owner` 与 `round.tasks` 只表示 worker；`round.verifier_assignments` 表示独立 verifier。它们不是换 owner、也不是子代理编号。
+
 不要写 `M2 verified` 当任务完成。应写 `TASK-001: verified`、`M2: worker_done`。`taskctl status` 可在窗口行旁标注任务终态（全部 `done` 时 `note=tasks_closed`），**不改写** `window_status`。
 
 Registry / RECEIPT-LOG 是给人看的路径与叙事，**不能代替** manifest 状态。启用 `.task/` 后，状态表只允许来自：
@@ -36,7 +38,7 @@ py -3 scripts/taskctl.py --root <项目根> status --markdown --write
 - `worker_done`：`worker`
 - `verifying`、`verified`：`verifier`
 - `integrated`、`done`：`M1`（短路径上 `worker_done → integrated` 也必须是 M1）
-- `reopened`：`M1`，同时递增 `attempt`
+- `reopened`：`M1`，同时递增任务总 `attempt` 并记录同根因 `block_id`
 
 `verified`、`integrated`、`done` 迁移前脚本会重新运行 Full Gate；`done` 还必须从 `integrated` 进入。人工可改为 `paused`、`blocked` 或 `reopened`，但不能无证据伪造 `verified` / `done`。
 
@@ -45,7 +47,7 @@ py -3 scripts/taskctl.py --root <项目根> status --markdown --write
 - **G0**：任务目录、manifest、工人报告、独立验收报告是否存在（后者仅策略要求独立验收时强制）。
 - **G1**：R 编号是否完整覆盖，是否有对应证据。
 - **G2**：测试退出码、diff 越界；只允许改 `allowed_paths`。Full Gate 会真跑命令、核 evidence 路径、有 Git 时核工作区。`manifest.json` / `rerun.json` / `verify-report.json` 未列入工人 `changed_files` 不算漏报。`src/`、`tests/`、`worker-report.json`、evidence 仍必须申报。路径只去掉 `./` 前缀，保留 `.task/`。
-- **G3**：策略要求独立验收时，必须有独立验收报告，且 `reviewer` 不得等于实现窗口。
+- **G3**：策略要求独立验收时，必须有独立验收报告、正式 `verifier_assignments`，且 `reviewer` 必须等于该指派窗并不得等于实现窗口。
 
 `--basic` 只跑到工人材料，不重跑命令。Hook 不标 done，也不因重跑失败去改状态。
 
@@ -59,6 +61,10 @@ py -3 scripts/taskctl.py --root <项目根> status --markdown --write
 - `GEAR_VIOLATION`：未确认却宣称 bonus / 协作挡 A，停止收口。
 - `HOOK_EVIDENCE_MISSING`：声明了 hook 监督但没有宿主 stop 的 start/end 对，停止收口。
 - `PARALLEL_FAIL`：子代理同文件并发、重复、工人兼 verifier 或越权路径，停止收口。
+- `VERIFIER_ASSIGNMENT_MISSING`：新式 round 中需要独立验收的任务未正式派 verifier，停止收口。
+- `VERIFIER_ASSIGNMENT_CONFLICT` / `WORKER_ASSIGNMENT_CONFLICT`：verifier 与 owner 相同、verifier 不在本轮、验收报告与指派不一致，或 `round.tasks` 的 worker 路由不等于 owner，停止收口。
+- `REASSIGN_REQUIRED`：同一 `block_id` 第 2 次失败，必须先换不同的正式 M/C owner。
+- `HARD_STOP`：同一 `block_id` 第 3 次失败，已写 BLOCKERS；不得继续盲目重试。
 - `MIGRATE_FAIL`：无备份许可的覆盖、无 lock 就 `--check`、或把运行中的脚本迁到自己身上。
 - `MIGRATE_READY` / `MIGRATE_CHECK_FAIL`：`migrate-project --check` 的四项迁移健康检查。
 
@@ -83,6 +89,14 @@ py -3 scripts/taskctl.py --root <项目根> status --markdown --write
 
 最小字段：`task_id`、`owner`、`track`、`risk`、`allowed_paths`、`source_refs`、`requirements`、`attempt`。每个 requirement 至少包含 `id`、`text`、`verify`。可跑的验收命令写在 `verify_cmd`，或把 `verify` 写成可直接执行的命令。
 
+0.33 新建任务还会写：`assignment_history`、`block_history`。它们不是新角色或第二套状态：`owner` 始终是**当前负责人**；`assignment_history` 只追加“旧 owner → 新 owner / 原因 / block_id / 次数”；`block_history` 只记录同根因失败。旧项目迁入时可缺这两项，第一次重新派负责人时脚本会补初始记录。
+
+0.34 新建 `round.json` 会写空的 `verifier_assignments` 对象。需要独立验收时填成 `{ "TASK-001": "C2" }`：该窗必须在 `expected_windows`、必须不同于 `owner`，并只负责 `verify-report.json` 与 `verifying → verified`。旧 round 缺此字段仍可读取；若要采用 0.34 的正式验收派工，M1 应用 `assign-verifier TASK-001 --window C2 --actor M1` 补入，不能把 C2 改为 owner。
+
+若旧 round 已错误地把 `TASK-001` 放在 C2、但 manifest 的 owner 仍是 C1，先运行 `sync-worker-route TASK-001 --actor M1`，只把 `round.tasks` 恢复为 C1；再 `assign-verifier TASK-001 --window C2 --actor M1`。这不是 `reassign`，不会改变 owner、attempt 或交接历史。
+
+同一卡点命令必须给稳定 `--block-id`：第 1 次原 owner 修复；第 2 次同 block 必须 `--new-owner`，或先产生 `REASSIGN_REQUIRED` 后运行 `reassign`；第 3 次同 block 自动 `HARD_STOP`。换 root cause 必须给 `--new-root-cause` 说明，不能靠改名逃避计数。`attempt` 是总重开次数，换 owner 不重置，仍用于独立验收策略。
+
 `source_refs` 每条：`id`、`text`（用户原始需求）、`maps_to`（非空 R 编号列表）。每条 R 必须被映射到。`round.json` 可选 `source_requirements`；列出的 id 必须出现在某任务的 `source_refs` 里。未映射 → `REQUIREMENT_COVERAGE_FAIL`。禁止只改聊天话术加需求。
 
 `round.json` 可选：
@@ -102,9 +116,14 @@ py -3 scripts/taskctl.py selftest
 py -3 scripts/taskctl.py brief TASK-001 --role worker
 py -3 scripts/taskctl.py handoff
 py -3 scripts/taskctl.py init TASK-001
+py -3 scripts/taskctl.py round-init ROUND-001 C1 C2 --task C1=TASK-001 --verifier TASK-001=C2
+py -3 scripts/taskctl.py assign-verifier TASK-001 --window C2 --actor M1
+py -3 scripts/taskctl.py sync-worker-route TASK-001 --actor M1
 py -3 scripts/taskctl.py gate TASK-001
 py -3 scripts/taskctl.py audit-round
-py -3 scripts/taskctl.py reopen TASK-001 --reason "人工验收发现遗漏"
+py -3 scripts/taskctl.py reopen TASK-001 --block-id BLOCK-UI-001 --reason "人工验收发现遗漏" --actor M1
+py -3 scripts/taskctl.py reopen TASK-001 --block-id BLOCK-UI-001 --new-owner C1 --reason "第二次同根因失败" --actor M1
+py -3 scripts/taskctl.py reassign TASK-001 --owner C1 --reason "REASSIGN_REQUIRED 后交接" --actor M1
 py -3 scripts/taskctl.py status
 py -3 scripts/taskctl.py status --markdown
 py -3 scripts/taskctl.py status --markdown --write
@@ -116,6 +135,7 @@ py -3 scripts/taskctl.py transition TASK-001 integrated --actor M1
 py -3 scripts/taskctl.py transition TASK-001 done --actor M1
 py -3 scripts/taskctl.py transition TASK-001 verifying --actor verifier
 py -3 scripts/taskctl.py transition TASK-001 verified --actor verifier
+py -3 scripts/taskctl.py receipt C2 --role verifier
 ```
 
 `brief` / `handoff` / `status --markdown` 默认不改 `.task/` 状态。`--write` 只覆盖 `docs/TASK-STATUS.md`。无 `.task/` 时 `--markdown` → `STATUS_FAIL: no .task`。`--role` 仅 `worker|scout|verifier`。缺失 task 或非法 role → `BRIEF_FAIL`。无 `.task/` 跑 `handoff` → `HANDOFF_FAIL`。

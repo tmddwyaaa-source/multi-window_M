@@ -128,8 +128,8 @@ def main() -> int:
     )
     code, out = run(["--root", str(root), "brief", "TASK-001", "--role", "verifier"], cwd=root)
     expect(
-        "B-pos-verifier",
-        code == 0 and "role=verifier" in out and "verify-report.json" in out and "reviewer" in out,
+        "B-neg-verifier-on-short-path",
+        code != 0 and "independent verification is not required" in out,
         out,
     )
 

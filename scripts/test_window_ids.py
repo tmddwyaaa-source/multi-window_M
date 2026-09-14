@@ -1,4 +1,4 @@
-"""v0.32: window ids stay WINDOW_RE; round-init still caps temporary C at 4."""
+"""v0.34: window ids stay WINDOW_RE; round-init still caps temporary C at 4."""
 from __future__ import annotations
 
 import os
@@ -48,7 +48,7 @@ def main() -> int:
         module.WINDOW_RE.pattern == r"^(?:M[1-9]|M10|C[1-9][0-9]*)$",
         module.WINDOW_RE.pattern,
     )
-    expect("W-src-version-032", module.SKILL_VERSION == "0.32", module.SKILL_VERSION)
+    expect("W-src-version-034", module.SKILL_VERSION == "0.34", module.SKILL_VERSION)
 
     for value in ("M1", "M10", "C1", "C4", "C99"):
         expect(f"W-pos-valid-{value}", module.valid_window(value) is True, value)
@@ -67,7 +67,7 @@ def main() -> int:
         expect(f"W-doc-templates-no-{token}", token not in templates, token)
     expect(
         "W-doc-templates-ordinary-filename",
-        "batch-02.json" in templates and "/multi-window_M-0.32" in templates,
+        "batch-02.json" in templates and "/multi-window_M-0.34" in templates,
         templates[:200],
     )
 
@@ -115,7 +115,7 @@ def main() -> int:
         out,
     )
 
-    print("ALL v0.32 WINDOW ID CHECKS PASSED")
+    print("ALL v0.34 WINDOW ID CHECKS PASSED")
     return 0
 
 

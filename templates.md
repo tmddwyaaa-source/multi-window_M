@@ -40,9 +40,9 @@
 **验收**（检查已有文件，不生成文件；把 n= 换成该文件名）：
 - 见项目 `data/CONTENT-SPEC.md` 中 `python -c` 段，把文件名换成 `batch-02`
 
-**环内角色**：斥候 → 主力 → 搜剿；同一卡点最多 4 次
+**环内角色**：按需斥候 → 主力 → 搜剿；同一卡点最多 3 次（复用 → 换负责人 → 硬停）
 
-**开工话术**：`我是 C1 窗口，请读 MODULE-REGISTRY.md 中【C1】章节。按斥候→主力→搜剿执行。只改规定路径。必须贴终端输出原文。不要打开网页预览。`
+**开工话术**：`我是 C1 窗口，请读 MODULE-REGISTRY.md 中【C1】章节。信息未知才先斥候；否则直接最小确认→主力→搜剿。只改规定路径。必须贴终端输出原文。不要打开网页预览。`
 
 **状态**：见 `docs/TASK-STATUS.md`（禁止在本章手写 pending/done）
 ```
@@ -54,8 +54,8 @@
 ```text
 本任务按循环渐进执行：
 - 每环只做一个目标，必须有成功标准、证据、存档点
-- 环内角色：斥候 → 主力 → 搜剿；fail 则主力↔搜剿
-- 同一卡点签名最多 4 次；第 4 次仍 fail 必须硬停并写卡点升级报告
+- 环内角色：信息未知才插入斥候；fail 原因明确则主力直修
+- 同一 block_id：第 1 次复用原 owner，第 2 次换不同 owner，第 3 次 fail 硬停并写卡点升级报告
 - 自测必须贴本回合终端原文；不要打开网页预览
 - 常驻只称 M2～M10，临时只称 C1、C2…；窗号见 SKILL「窗口身份」
 - 工人跑完验收不会自动交给 M1；须用户传「{窗号} 已完成，请查收」
@@ -96,7 +96,7 @@ py -3 scripts/taskctl.py --root <项目根> status --markdown --write
 把 `handoff` 与 `docs/TASK-STATUS.md` 当接班状态源。然后再：
 
 ```text
-/multi-window_M-0.32
+/multi-window_M-0.34
 我是 M1。已阅读 handoff 生成物。按未闭环项继续；查收仍须本窗重跑；M1 唯一收口。
 先自报挡位。不要报加分（除非本窗已确认并点名）。不要手写转述代替 brief。
 ```
@@ -108,10 +108,11 @@ M1 写好 manifest / round 后，不要手写开工长文。生成简报并**原
 ```text
 py -3 scripts/taskctl.py --root <项目根> brief TASK-001 --role worker
 py -3 scripts/taskctl.py --root <项目根> brief TASK-001 --role scout
-py -3 scripts/taskctl.py --root <项目根> brief TASK-001 --role verifier
+py -3 scripts/taskctl.py --root <项目根> assign-verifier TASK-001 --window C2 --actor M1
+py -3 scripts/taskctl.py --root <项目根> brief TASK-001 --role verifier --window C2
 ```
 
-`--role` 只能是 `worker` / `scout` / `verifier`。不存在的 task 或非法 role 会被拒绝。`brief` 与 `handoff` 不改状态。
+`--role` 只能是 `worker` / `scout` / `verifier`。中高风险任务必须先正式指派不同 verifier；verifier brief 会同时写明“验收窗 C2 / 实现 owner C1”。不存在的 task、非法 role 或错误窗号会被拒绝。`brief` 与 `handoff` 不改状态。
 
 工人窗仍用下面的简版话术作身份句；任务细节以 brief 生成物为准。
 
@@ -122,7 +123,7 @@ py -3 scripts/taskctl.py --root <项目根> brief TASK-001 --role verifier
 ```text
 我是 {窗号} 窗口，请读 {项目路径}/docs/MODULE-REGISTRY.md 中【{窗号}】章节。
 若用户贴了 taskctl brief 生成物，以简报为准（allowed_paths、R 项、验收命令）。
-按斥候 → 主力 → 搜剿执行；同一卡点最多 4 次。
+信息未知才先斥候；同一 block_id 最多 3 次（复用 → 换负责人 → 硬停）。
 只改该模块规定路径，勿覆盖其他模块文件。
 必须用终端跑 Registry 验收命令，回复里贴命令 + 终端输出原文；没有原文不许说请查收。
 不要打开网页预览。
@@ -142,7 +143,7 @@ py -3 scripts/taskctl.py --root <项目根> brief TASK-001 --role verifier
 ### 斥候
 
 ```text
-/multi-window_M-0.32
+/multi-window_M-0.34
 我是 {窗号}。当前角色：斥候（只调查，禁止改任何文件）。
 请读 {项目路径}/docs/MODULE-REGISTRY.md 中【{窗号}】章节。
 主题：{一句话}
@@ -161,7 +162,7 @@ py -3 scripts/taskctl.py --root <项目根> brief TASK-001 --role verifier
 ### 主力
 
 ```text
-/multi-window_M-0.32
+/multi-window_M-0.34
 我是 {窗号}。当前角色：主力（只实现，最小改动）。
 请读 Registry 中【{窗号}】章节。依据斥候报告（若有则以下为准）：
 ---
@@ -182,7 +183,7 @@ py -3 scripts/taskctl.py --root <项目根> brief TASK-001 --role verifier
 ### 搜剿 — 子窗口自检
 
 ```text
-/multi-window_M-0.32
+/multi-window_M-0.34
 我是 {窗号}。当前角色：搜剿（禁止修改实现代码）。
 卡点签名：{现象 + 位置/测试}
 本轮循环计数：{k}/4
@@ -202,7 +203,7 @@ py -3 scripts/taskctl.py --root <项目根> brief TASK-001 --role verifier
 ### M1 最终查收
 
 ```text
-/multi-window_M-0.32
+/multi-window_M-0.34
 我是 M1。当前角色：搜剿（只验收，禁止顺手改子模块来“修完”）。
 用户汇报：{窗号} 已完成，请查收。（或：所有窗口已完成 = 只核本轮派工名单）
 
@@ -227,13 +228,12 @@ py -3 scripts/taskctl.py --root <项目根> brief TASK-001 --role verifier
 ### 卡点签名
 - 现象：
 - 主要位置/测试：
-- 已循环次数：4/4
+- 已循环次数：3/3
 
 ### 已尝试过的改法（按时间）
 1. 改了什么 → 结果
 2. …
 3. …
-4. …
 
 ### 当前最可能根因
 - …
@@ -316,7 +316,7 @@ D:\gongju\{工具名}-{版本号}/
 | docs/TASK-STATUS.md | 由 `status --markdown --write` 生成的状态表，禁止手改 |
 | docs/RECEIPT-LOG.md | 查收叙事（结论以 TASK-STATUS / transition 为准） |
 | docs/FIX-PLAN.md | Phase 2 修复分工 |
-| docs/BLOCKERS/ | 卡点升级报告（达 4 次上限） |
+| docs/BLOCKERS/ | 卡点升级报告（达 3 次上限） |
 
 **作战条令**：常驻 M1～M10；临时 C 一轮最多 4。窗号见 SKILL「窗口身份」。查收以本窗重跑为准；工人不会自动交 M1。未确认额外能力不要说加分。网页预览仅 M1。可用宿主已有子代理加速，不新增角色窗。
 
@@ -347,6 +347,8 @@ D:\gongju\{工具名}-{版本号}/
   "attempt": 0,
   "status": "pending",
   "status_history": [],
+  "assignment_history": [{"from": null, "to": "M4", "reason": "initial assignment"}],
+  "block_history": [],
   "allowed_paths": ["src/", "tests/"],
   "source_refs": [
     {"id": "S1", "text": "用户原始需求一句话", "maps_to": ["R1"]}
@@ -402,17 +404,18 @@ D:\gongju\{工具名}-{版本号}/
 }
 ```
 
-当前规则：`reviewer` 必须是独立窗口，不能等于 `worker-report.window`；`changed_files` 必须全部落在 `manifest.json` 的 `allowed_paths` 内；`evidence[].path` 必须真实存在。Full Gate 会重跑 `verify_cmd` / 可执行的 `verify` / `tests[].command`，并写 `rerun.json`。**`manifest.json`、`rerun.json`、`verify-report.json` 未列入工人 `changed_files` 不算漏报。** 任务状态写在 manifest，窗口状态写在 round.json，不要混写。状态变更必须通过 `taskctl.py transition`，直接编辑 `status` 或整份覆盖 manifest 不算有效收口。策略冲突输出 `POLICY_CONFLICT`。细节见 `references/task-gate.md`。
+当前规则：`reviewer` 必须是 `verifier_assignments` 正式指派的独立窗口，不能等于 `worker-report.window` 或 task owner；`changed_files` 必须全部落在 `manifest.json` 的 `allowed_paths` 内；`evidence[].path` 必须真实存在。Full Gate 会重跑 `verify_cmd` / 可执行的 `verify` / `tests[].command`，并写 `rerun.json`。**`manifest.json`、`rerun.json`、`verify-report.json` 未列入工人 `changed_files` 不算漏报。** 任务状态写在 manifest，窗口状态写在 round.json，不要混写。状态变更必须通过 `taskctl.py transition`，直接编辑 `status` 或整份覆盖 manifest 不算有效收口。策略冲突输出 `POLICY_CONFLICT`。细节见 `references/task-gate.md`。
 
 ### 本轮状态 round.json
 
 ```json
 {
   "round_id": "ROUND-001",
-  "expected_windows": ["M4", "C1"],
+  "expected_windows": ["M4", "C1", "C2"],
   "receipts": [],
-  "window_status": {"M4": "pending", "C1": "pending"},
+  "window_status": {"M4": "pending", "C1": "pending", "C2": "pending"},
   "tasks": {"M4": ["TASK-001"], "C1": ["TASK-002"]},
+  "verifier_assignments": {"TASK-001": "C2"},
   "source_requirements": [
     {"id": "S1", "text": "用户本轮原始需求"}
   ],
@@ -427,7 +430,7 @@ D:\gongju\{工具名}-{版本号}/
 }
 ```
 
-用户发送「M4 已完成，请查收」后，M1 记录 receipt；所有本轮窗口都收到后，将 `check_requested` 设为 `true`，再运行 `taskctl.py audit-round`。脚本会检查 `window_status` 是否存在、覆盖全部窗口，并与 receipts 一致。用户中途加需求：先写入 `source_requirements` / 对应任务 `source_refs` 并补 R 项与 verify，禁止只改聊天。未映射 → `REQUIREMENT_COVERAGE_FAIL`。未确认却写 bonus/A → `GEAR_VIOLATION`。`hook_supervision=true` 但没有宿主 stop 对 → `HOOK_EVIDENCE_MISSING`。子代理冲突 → `PARALLEL_FAIL`。
+worker 完成后用 `receipt C1`；verifier 完成后用 `receipt C2 --role verifier`。所有本轮窗口都收到后，将 `check_requested` 设为 `true`，再运行 `taskctl.py audit-round`。脚本会检查 `window_status` 是否存在、覆盖全部窗口，并与 receipts 一致。用户中途加需求：先写入 `source_requirements` / 对应任务 `source_refs` 并补 R 项与 verify，禁止只改聊天。未映射 → `REQUIREMENT_COVERAGE_FAIL`。未确认却写 bonus/A → `GEAR_VIOLATION`。`hook_supervision=true` 但没有宿主 stop 对 → `HOOK_EVIDENCE_MISSING`。子代理冲突 → `PARALLEL_FAIL`。
 
 ### 开工补充话术
 
@@ -471,7 +474,7 @@ py -3 scripts/taskctl.py transition TASK-001 integrated --actor M1
 py -3 scripts/taskctl.py transition TASK-001 done --actor M1
 ```
 
-`verified`、`integrated`、`done` 每次都会重新运行 Full Gate；任意一步失败都不得继续。medium/high 或 `attempt >= 2` 禁止 `worker_done → integrated`。若人工验收发现问题，使用 `reopen TASK-001 --actor M1 --reason "..."`。
+`verified`、`integrated`、`done` 每次都会重新运行 Full Gate；任意一步失败都不得继续。medium/high 或 `attempt >= 2` 禁止 `worker_done → integrated`。若人工验收发现问题，使用 `reopen TASK-001 --block-id BLOCK-... --actor M1 --reason "..."`。第 2 次同 block 必须给不同 `--new-owner`，或先触发 `REASSIGN_REQUIRED` 再运行 `reassign`；第 3 次自动硬停。
 
 ### Hook 触发证据
 

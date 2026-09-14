@@ -58,7 +58,7 @@ flowchart TD
 
     G --> R{"唯一风险策略"}
     R -->|"low 且首次"| I["M1 集成<br/>worker_done → integrated"]
-    R -->|"medium/high、重开或失败 ≥2 次"| V["独立验收者<br/>只验证，不参与实现<br/>verifying → verified"]
+    R -->|"medium/high、重开或失败 ≥2 次"| V["独立验收窗<br/>C2 与 C1 分离；只验证<br/>verifying → verified"]
     V --> G
     I --> D["M1 最终收口<br/>Full Gate 通过 → done"]
     G -->|"验证后通过"| D
@@ -86,7 +86,7 @@ Multi-Window M 使用的是四种不同维度；它们不能混为一谈。
 
 **M1 不是“最强工人”，而是唯一负责确认项目事实的人。**
 
-**verifier 不是常设部门，而是在策略要求时出现的独立检查身份。**
+**verifier 不是常设部门，而是在策略要求时出现的独立检查身份。v0.34 将它正式派到另一个 M/C 窗：例如 C1 实现、C2 验收；C2 不会接管 C1 的 owner。**
 
 **斥候 / 主力 / 搜剿不是新窗口，而是同一窗口在不同阶段的工作方式。**
 
@@ -129,8 +129,8 @@ pending → in_progress → worker_done → verifying → verified → integrate
 
 | 宿主 | 建议目录 | 调用 |
 |---|---|---|
-| Cursor | `~/.cursor/skills/multi-window_M-0.32/` | `/multi-window_M-0.32` |
-| Codex | `~/.codex/skills/multi-window_M-0.32/` | `/multi-window_M-0.32` |
+| Cursor | `~/.cursor/skills/multi-window_M-0.34/` | `/multi-window_M-0.34` |
+| Codex | `~/.codex/skills/multi-window_M-0.34/` | `/multi-window_M-0.34` |
 
 仓库目录始终为 `multi-window_M`；当前版本以 [`SKILL.md`](SKILL.md) 的 `version` 字段为准。
 
@@ -148,6 +148,13 @@ M1 将原始需求映射到 `source_refs` 与 R 项，声明 `allowed_paths`、�
 py -3 scripts/taskctl.py --root <项目根> brief TASK-001 --role worker
 ```
 
+若任务需要独立验收，M1 还要正式派出不同的验收窗；不能把实现任务从 C1 挪到 C2 来冒充派工：
+
+```text
+py -3 scripts/taskctl.py --root <项目根> assign-verifier TASK-001 --window C2 --actor M1
+py -3 scripts/taskctl.py --root <项目根> brief TASK-001 --role verifier --window C2
+```
+
 ### 4. 工人执行，M1 查收
 
 工人只在允许路径内实现并跑自测；用户或已确认的协作能力把“已完成，请查收”送回 M1。M1 重跑验收命令和 Full Gate，然后使用 `transition` 按合法路径收口。
@@ -158,7 +165,7 @@ py -3 scripts/taskctl.py --root <项目根> transition TASK-001 integrated --act
 py -3 scripts/taskctl.py --root <项目根> transition TASK-001 done --actor M1
 ```
 
-中高风险、重开或重复失败任务必须先经过 verifier 的 `verifying → verified`。
+中高风险、重开或重复失败任务必须先经过 verifier 的 `verifying → verified`。Full Gate 会核对：C2 已被正式指派、C2 不等于 C1、验收报告的 reviewer 确实是 C2。
 
 ### 5. 交接或恢复时，不靠聊天记忆
 
@@ -203,12 +210,15 @@ py -3 scripts/taskctl.py selftest
 | [`scripts/taskctl.py`](scripts/taskctl.py) | 门禁、状态迁移、简报、接班与迁移工具 |
 | [`scripts/`](scripts/) | 正向与负向自检 |
 | [`references/task-gate.md`](references/task-gate.md) | G0-G3、schema、状态机与策略表 |
+| [`references/performance.md`](references/performance.md) | 按需斥候、短回执与有界读取的性能试验 |
 | [`references/hooks.md`](references/hooks.md) | Codex、Cursor、Zcode 的 Hook 接线 |
 | [`testdata/`](testdata/) | 沙盒与测试记录 |
 
 ## 当前版本与边界
 
-当前版本：**0.32**。它统一了窗口身份表述，并保留了需求覆盖、状态单一来源、Hook 证据、子代理边界和迁移治理。
+当前版本：**0.34**。它在 0.32 的窗口身份、0.33 的三次卡点治理基础上，修复了独立验收的正式派工问题：一个任务可由 C1 实现、C2 验收，M1 仍是唯一收口者。
+
+0.34 新增 `verifier_assignments`、正式 verifier brief、验收窗回执，以及对缺验收窗、冒名 reviewer、worker 路由与 owner 冲突的 Gate 拒绝。C1→C2→M1 的完整闭环已通过脚本正反测试与真实窗口测试；具体变更见 [`CHANGELOG.md`](CHANGELOG.md)。
 
 Multi-Window M 不承诺“Agent 永远不会出错”。它承诺的是：错误不应轻易被伪装成完成；每个 `done` 都应能回到需求、文件、命令和验收记录重新检查。
 

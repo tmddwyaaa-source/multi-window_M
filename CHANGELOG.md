@@ -2,6 +2,22 @@
 
 当前规则以 `SKILL.md` 的 `version` 字段为准。本文件只作历史说明，**不得当作当前规则引用**。
 
+## 0.34 — 独立验收正式派工（2026-09-13）
+
+- 修复同一任务只能映射一个窗口的缺口：`round.tasks` 只表示 worker / owner，新增 `verifier_assignments` 表示独立验收窗。例如 `TASK-001` 可由 `C1` 实现、由 `C2` 验收，而 `owner` 始终是 C1。
+- `round-init` 支持 `--verifier TASK-001=C2`；已开 round 可由 M1 执行 `assign-verifier TASK-001 --window C2 --actor M1`。这不是 `reassign`，不会改 owner、attempt 或返工历史。
+- 对旧 round 的错误主路由，新增 `sync-worker-route TASK-001 --actor M1`：仅将 `round.tasks` 恢复到已有 owner，不能在验证开始后执行。
+- verifier `brief` 读取正式分配并显示验收窗与实现 owner；可选 `--window` 会校验所给窗号。verifier receipt 使用 `receipt C2 --role verifier`。
+- Full Gate / audit 新增 worker 与 verifier 路由校验：缺验收窗、验收窗等于 owner、验收报告 reviewer 不等于指派窗、或 worker 路由不等于 owner，均停止收口。
+- 新增 `test_verifier_assignments.py`，覆盖 C1 worker + C2 verifier 的完整 Gate、brief、状态、receipt、负向冲突与 round audit。
+
+## 0.33 — 可审计返工与按需探索（2026-09-13）
+
+- 同一卡点改为三阶：第 1 次原 owner 修复并复述打回项；第 2 次必须换不同正式 M/C owner；第 3 次 `HARD_STOP` 并写 BLOCKERS。总 `attempt` 不因换人重置。
+- `reopen` 必须给稳定 `block_id`；换根因须给 `--new-root-cause`。新增 `reassign`，`owner` 是当前负责人，`assignment_history` 保留不可覆盖的交接记录；无法换合格 owner → `REASSIGN_REQUIRED` / `NO_ELIGIBLE_REPLACEMENT_WORKER`，不得伪造换人。
+- 斥候从默认阶段改为按信息未知、冲突或过期触发；新增 `references/performance.md`，把短回执、有界读取、M1 状态驱动输出列为需同宿主 A/B 验证的性能试验，未削弱 Gate、独立验收或 Hook 三不。
+- M1 的长需求对齐、批次派工、异常处理、验收和最终预览仍是核心工作；压缩的是执行期间重复叙述，不是需求澄清。
+
 ## 0.32 — 窗口身份收口（2026-09-08）
 
 - SKILL 增加唯一权威节「窗口身份（窗号）」；铁规则 1～2、对窗说话、反模式、templates 只指向该节。
