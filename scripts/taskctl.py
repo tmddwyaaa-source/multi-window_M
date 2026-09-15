@@ -108,6 +108,9 @@ SCHEMA_FIELD = "schema_version"
 DSH_READS_SCHEMA = SCHEMA_VERSION
 DSH_WRITES_SCHEMA = SCHEMA_VERSION
 UNSUPPORTED_SCHEMA = "UNSUPPORTED_SCHEMA"
+# 反方向：项目已声明更高的 schema 契约，却有文件缺版本标记 → 被**更旧的宿主**写过。
+# 旧宿主不认识 `schema_version`，既不维护它也不报错，只能由当前宿主发现。
+SCHEMA_REGRESSION_RISK = "SCHEMA_REGRESSION_RISK"
 SCHEMA_KEY = "_schema"
 HARD_STOP = "HARD_STOP"
 REASSIGN_REQUIRED = "REASSIGN_REQUIRED"
@@ -315,6 +318,104 @@ def is_mutating_command(tokens: List[str]) -> bool:
     """写共同文件的子命令。只读子命令（status/gate/audit/brief/packet/handoff/selftest）除外。"""
     subcommand = next((token for token in tokens if token in KNOWN_COMMANDS), "")
     return subcommand in MUTATING_COMMANDS
+
+
+def project_contract_schema(root: Path) -> int:
+    """项目**自己声明**的 schema 契约版本（来自 `.task/skill-lock.json`）。
+
+    0 表示这个项目从未被任何带版本意识的宿主写过——也就是真正的历史项目。
+    只要它一直是 0，缺 `schema_version` 的文件就照旧兼容。一旦某个文件被写成
+    1（`init` / `round-init` / `migrate-project` 都会升级锁），契约就变成 1，
+    此后"缺版本标记"不再可能是历史遗留，只可能是**被旧宿主操作过**。
+    """
+    path = lock_path(root)
+    if not path.is_file():
+        return 0
+    try:
+        lock = read_json(path)
+    except ValueError:
+        return 0
+    raw = lock.get(SCHEMA_FIELD)
+    if isinstance(raw, bool) or raw is None:
+        return 0
+    try:
+        return max(0, int(raw))
+    except (TypeError, ValueError):
+        return 0
+
+
+def schema_regression_problems(root: Path) -> List[str]:
+    """活动轮 / 任务目录缺版本标记，而项目已声明更高契约 → 说明被旧宿主写过。
+
+    这是 `UNSUPPORTED_SCHEMA` 的**反方向**：那个防"未来版写的数据被现在这版乱改"，
+    这个防"现在这版写的数据被更旧的宿主乱改"。旧宿主不认识 `schema_version`，
+    所以它既不会维护这个标记，也不会报错——只能由这里发现。
+    """
+    declared = project_contract_schema(root)
+    if declared <= 0:
+        return []
+    problems: List[str] = []
+    round_file = round_path(root)
+    if round_file.is_file():
+        try:
+            data = read_json(round_file)
+        except ValueError:
+            data = None
+        if isinstance(data, dict) and schema_version_of(data) < declared:
+            problems.append(
+                f"{SCHEMA_REGRESSION_RISK}: .task/round.json declares "
+                f"schema_version={schema_version_of(data)} but .task/skill-lock.json "
+                f"declares {declared}：这一轮是被**更旧的宿主**写出/改写的，"
+                "按旧规则收口会与现行规则冲突。请用当前版本的 taskctl 重新 round-init，"
+                "或先确认没有旧宿主在操作这个项目。"
+            )
+    for directory in sorted(task_root(root).glob("TASK-*")):
+        manifest_file = directory / "manifest.json"
+        if not manifest_file.is_file():
+            continue
+        try:
+            manifest = read_json(manifest_file)
+        except ValueError:
+            continue
+        if schema_version_of(manifest) < declared:
+            problems.append(
+                f"{SCHEMA_REGRESSION_RISK}: .task/{directory.name}/manifest.json declares "
+                f"schema_version={schema_version_of(manifest)} but the project declares "
+                f"{declared}：该任务正被更旧的宿主改写，`block_attempts` 等新字段可能被绕过。"
+            )
+    return problems
+
+
+def ensure_contract_schema(root: Path) -> None:
+    """写入带版本的文件时，同步把项目的 schema 契约升到当前值。
+
+    调用点只在**真正写了新文件之后**（`init` / `round-init` / `migrate-project`）。
+    绝不在读取路径上调用：否则第一次读取就会把契约"自动补上"，回归检测随之失效。
+    """
+    path = lock_path(root)
+    lock: Dict[str, Any] = {}
+    if path.is_file():
+        try:
+            lock = read_json(path)
+        except ValueError:
+            lock = {}
+    if schema_version_of(lock) >= DSH_WRITES_SCHEMA:
+        return
+    lock[SCHEMA_FIELD] = DSH_WRITES_SCHEMA
+    lock.setdefault("skill_version", SKILL_VERSION)
+    lock["schema_declared_at"] = now_iso()
+    write_json(path, lock)
+
+
+def guard_schema_regression(root: Path) -> int:
+    """回归检测的 fail closed 出口：返回非 0 表示必须中止写操作。"""
+    problems = schema_regression_problems(root)
+    if not problems:
+        return 0
+    print("RESULT FAIL")
+    for problem in problems:
+        print(f"- {problem}")
+    return 1
 
 
 def write_json(path: Path, value: Dict[str, Any]) -> None:
@@ -1100,18 +1201,16 @@ def fingerprint_sources(diff_files: List[str], report: Optional[Dict[str, Any]])
     return sorted({normalized_path(value) for value in paths if str(value).strip()})
 
 
-def stale_report_errors(
+def stale_report_paths(
     root: Path,
     report: Optional[Dict[str, Any]],
-    task_id: str,
     previous: Dict[str, str],
 ) -> List[str]:
-    """报告是否覆盖了"自上次 Gate 之后又被改过"的文件。
+    """报告自称的 `changed_files` 中，自上次 Gate 之后**内容**又变过的那些。
 
-    只用**内容**比对，绝不看 mtime（时间戳可能只有秒级粒度，同秒写入会假阴性）。
+    只用内容比对，绝不看 mtime（时间戳可能只有秒级粒度，同秒写入会假阴性）。
     `previous` 必须是**上次记录的**指纹：拿本次刚算出的指纹去比等于自己跟自己比，
     永远判不出过期。
-    这是**软提示**：调用方只登记，不判 FAIL、不进卡点计数器。
     """
     if not isinstance(report, dict):
         return []
@@ -1119,7 +1218,7 @@ def stale_report_errors(
     if not isinstance(changed, list):
         return []
     if not previous:
-        # 还没有基线：记下本次指纹，下次再比。
+        # 还没有基线：本次只建立基线，下次再比。
         return []
     stale: List[str] = []
     for raw in sorted({normalized_path(value) for value in changed if value}):
@@ -1128,12 +1227,21 @@ def stale_report_errors(
             continue
         if previous.get(raw, "absent") != sha256_file(candidate):
             stale.append(raw)
-    if stale:
-        return [
-            f"STALE_REPORT: {task_id} worker-report.json covers changed_files that were "
-            f"modified after it was written: {', '.join(stale)}；请先重跑验收命令并在报告里更新证据"
-        ]
-    return []
+    return stale
+
+
+STALE_REPORT_HINT = (
+    "请先重跑验收命令并在报告里更新证据；报告只能**提示**它可能旧了，"
+    "不能声称验收仍然新鲜"
+)
+
+
+def stale_report_message(task_id: str, stale: List[str], *, blocking: bool) -> str:
+    scope = "禁止收口" if blocking else "仅提示"
+    return (
+        f"STALE_REPORT: {task_id} worker-report.json covers changed_files that were "
+        f"modified after it was written ({scope}): {', '.join(stale)}；{STALE_REPORT_HINT}"
+    )
 
 
 def validate_manifest_commands(manifest: Dict[str, Any]) -> List[str]:
@@ -1273,7 +1381,13 @@ def run_verify_command(root: Path, command: str) -> Dict[str, Any]:
         }
 
 
-def validate_evidence_rerun(root: Path, task_id: str, manifest: Dict[str, Any]) -> List[str]:
+def validate_evidence_rerun(
+    root: Path,
+    task_id: str,
+    manifest: Dict[str, Any],
+    *,
+    block_on_stale: bool = False,
+) -> List[str]:
     errors: List[str] = []
     report: Optional[Dict[str, Any]] = None
     report_path = task_dir(root, task_id) / "worker-report.json"
@@ -1320,7 +1434,8 @@ def validate_evidence_rerun(root: Path, task_id: str, manifest: Dict[str, Any]) 
         )
         if undeclared:
             errors.append(
-                f"{task_id}: git changes in allowed_paths not listed in changed_files: {', '.join(undeclared)}"
+                f"{task_id}: 本任务 allowed_paths 内、但未列入 worker-report.changed_files 的改动"
+                f"（且不属于门禁自有产物）: {', '.join(undeclared)}"
             )
 
     commands = collect_verify_commands(manifest, report)
@@ -1330,12 +1445,18 @@ def validate_evidence_rerun(root: Path, task_id: str, manifest: Dict[str, Any]) 
     if precheck:
         emit_unreplayable_command(precheck)
     errors.extend(precheck)
-    # 报告是否覆盖了"自上次 Gate 之后又被改过"的文件：软提示，只登记不判 FAIL。
+    # 报告是否覆盖了"自上次 Gate 之后又被改过"的文件。
+    # 分层：日常 `gate` 只提示；**收口**（audit-round / round-close / final）阻断。
+    # 收口是"声称验收新鲜"的那个动作，不能拿过期证据过关。
     # 必须与**上次记录的**指纹比，否则等于自己跟自己比。
     fingerprint = content_fingerprint(root, fingerprint_sources(diff_files, report))
-    stale = stale_report_errors(root, report, task_id, recorded_fingerprint(root, task_id))
+    stale = stale_report_paths(root, report, recorded_fingerprint(root, task_id))
     if stale:
-        emit_stale_report(stale)
+        message = stale_report_message(task_id, stale, blocking=block_on_stale)
+        if block_on_stale:
+            errors.append(message)
+        else:
+            print(message)
     command_results = [run_verify_command(root, command) for command in commands]
     for result in command_results:
         if result["exit_code"] != 0:
@@ -1436,9 +1557,8 @@ def emit_unreplayable_command(errors: List[str]) -> None:
 
 
 def emit_stale_report(errors: List[str]) -> None:
-    for error in errors:
-        if "STALE_REPORT" in str(error):
-            print(str(error))
+    if any("STALE_REPORT" in str(error) for error in errors):
+        print("STALE_REPORT")
 
 
 def emit_unsupported_schema(errors: List[str]) -> None:
@@ -1455,6 +1575,7 @@ def emit_close_tokens(errors: List[str]) -> None:
     emit_assignment_tokens(errors)
     emit_unreplayable_command(errors)
     emit_unsupported_schema(errors)
+    emit_stale_report(errors)
 
 
 def emit_assignment_tokens(errors: List[str]) -> None:
@@ -1599,7 +1720,18 @@ def validate_verification(root: Path, task_id: str, manifest: Dict[str, Any], re
     return errors
 
 
-def gate(root: Path, task_id: str, phase: str) -> List[str]:
+def gate(
+    root: Path,
+    task_id: str,
+    phase: str,
+    *,
+    closure: bool = False,
+) -> List[str]:
+    """`closure=True` 表示这次判定要用来**收口**，而不是日常迭代。
+
+    差别只在证据新鲜度：收口时过期报告（`STALE_REPORT`）是阻断项，迭代时只是提示。
+    其余规则完全相同，避免出现"收口用的是一套规则、迭代用的是另一套"。
+    """
     schema_errors = schema_problems(root)
     if schema_errors:
         # fail closed：schema 比本宿主新 → 只允许查看，禁止收口。
@@ -1634,7 +1766,9 @@ def gate(root: Path, task_id: str, phase: str) -> List[str]:
                     required=policy["independent_verification"],
                 )
             )
-        errors.extend(validate_evidence_rerun(root, task_id, manifest))
+        errors.extend(
+            validate_evidence_rerun(root, task_id, manifest, block_on_stale=closure)
+        )
     return errors
 
 
@@ -1684,7 +1818,7 @@ def cmd_round_close(args: argparse.Namespace, root: Path) -> int:
 
     data["check_requested"] = True
     write_json(round_path(root), data)
-    if cmd_audit_round(root) != 0:
+    if cmd_audit_round(root, closure=True) != 0:
         print("ROUND_CLOSE_FAIL: 审计未通过，round.json 保持原位")
         return 1
 
@@ -1734,6 +1868,7 @@ def cmd_init(args: argparse.Namespace, root: Path) -> int:
         ],
     }
     write_json(directory / "manifest.json", manifest)
+    ensure_contract_schema(root)
     print(f"CREATED {directory.relative_to(root)}")
     print("NEXT: edit manifest.json before dispatching the task")
     return 0
@@ -1798,6 +1933,7 @@ def cmd_round_init(args: argparse.Namespace, root: Path) -> int:
         },
     )
     print(f"CREATED {path.relative_to(root)}")
+    ensure_contract_schema(root)
     return 0
 
 
@@ -1996,7 +2132,11 @@ def cmd_gate(args: argparse.Namespace, root: Path) -> int:
     return 0
 
 
-def cmd_audit_round(root: Path, require_hook_evidence: bool = True) -> int:
+def cmd_audit_round(
+    root: Path,
+    require_hook_evidence: bool = True,
+    closure: bool = False,
+) -> int:
     path = round_path(root)
     if not path.exists():
         # This is the normal result for projects that do not use this skill.
@@ -2008,8 +2148,9 @@ def cmd_audit_round(root: Path, require_hook_evidence: bool = True) -> int:
         print(f"AUDIT FAIL: {exc}")
         return 1
     if not data.get("check_requested", False):
+        # 收口路径会先自行置 true，所以走到这里等于"从来没请求过审计"。
         print("AUDIT SKIP (check_requested=false)")
-        return 0
+        return 1 if closure else 0
 
     expected = {str(value) for value in data.get("expected_windows", [])}
     receipts = {str(value) for value in data.get("receipts", [])}
@@ -2056,7 +2197,9 @@ def cmd_audit_round(root: Path, require_hook_evidence: bool = True) -> int:
     if missing_receipts:
         print("ROUND_NOT_READY")
         print(f"- missing receipts: {', '.join(missing_receipts)}")
-        return 0
+        # 例行审计：这不是错误，返回 0 只表示"还没就绪"。
+        # 但**收口**时它不是通过：绝不允许把没就绪的轮当成收口依据归档。
+        return 1 if closure else 0
 
     task_ids = task_ids_for_round(data)
     if not task_ids:
@@ -2091,7 +2234,9 @@ def cmd_audit_round(root: Path, require_hook_evidence: bool = True) -> int:
     print("BASIC_GATE_PASS")
     full_errors: List[str] = []
     for task_id in task_ids:
-        full_errors.extend(gate(root, task_id, "full"))
+        # 只有真正要归档的那次（round-close → closure=True）才把过期报告当阻断项。
+        # 例行审计仍然放行并打印提示，避免一条软提示卡住整个复盘流程。
+        full_errors.extend(gate(root, task_id, "full", closure=closure))
     if full_errors:
         emit_close_tokens(full_errors)
         if any(
@@ -2339,6 +2484,7 @@ def cmd_migrate_project(args: argparse.Namespace, root: Path) -> int:
 
     dest_rel = str(destination.relative_to(root)).replace("\\", "/")
     lock: Dict[str, Any] = {
+        SCHEMA_FIELD: DSH_WRITES_SCHEMA,
         "skill_version": SKILL_VERSION,
         "taskctl_version": SKILL_VERSION,
         "migrated_at": now_iso(),
@@ -2357,6 +2503,10 @@ def cmd_migrate_project(args: argparse.Namespace, root: Path) -> int:
     lock["status"] = "copied"
     write_json(lock_path(root), lock)
     write_migrate_report(root, lock)
+    # 迁移完成即把项目的 schema 契约升到当前值：此后"缺版本标记"只可能是被旧宿主
+    # 写过（回归），不可能是历史遗留。**不批量改写已有 manifest/round**——那等于
+    # 谎称旧文件已按新规则写过，会让回归检测与 LEGACY_UNSCOPED 标注同时失真。
+    ensure_contract_schema(root)
     print(f"MIGRATED {dest_rel} from multi-window-m-035 v{SKILL_VERSION}")
     print("NEXT: py -3 scripts/taskctl.py --root <project> migrate-project --check")
     print("Do not continue feature work until MIGRATE_READY")
@@ -3886,6 +4036,9 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         blocked = guard_mutation(root)
         if blocked:
             return blocked
+        regressed = guard_schema_regression(root)
+        if regressed:
+            return regressed
     try:
         if args.command == "init":
             return cmd_init(args, root)

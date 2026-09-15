@@ -13,16 +13,24 @@
 | `status` 会逐任务重跑 Gate（含 ~90s 回归命令），多任务时被 harness 120s 掐断 | 报告 §4.8 | **`status` 改为只读**：不执行任何 shell 命令，只显示上次真跑的记录（`GATE_PASS`/`GATE_FAIL`/`GATE_NOT_RUN`/`GATE_STALE`）。需要重算用显式 `--deep`。收口仍由 `gate --full` / `audit-round` 负责 |
 | 没有关轮命令，第二轮开不了，只能手工删 `round.json` | 报告 §2.3 | **新增 `round-close`**：仅当整轮任务全部 `done` 且审计通过，才把 `round.json` **原子归档**到 `.task/rounds/`；未完成任务一律拒绝；绝不自动触发 |
 | `tests[].command` 写占位符 / 说明文字 / 已删文件，Full Gate 逐字重放 → 永久 FAIL | 报告 §2.9、§4.3、§4.7、§4.15（**同一根因出现 3 次**） | **新增 `UNREPLAYABLE_COMMAND` 预检**：占位符、全角/中文说明、无运行器前缀、引用已声明却缺失的文件 → 收口前直接报明码并指出条目。**它是验收证据错误，不推进卡点计数** |
-| verify-report 会在文件被改后继续被当证据用 | 报告 §2.22 | **新增 `STALE_REPORT`**：报告自称的 `changed_files` 之后又被改过 → 打**软提示**（不判 FAIL、不进卡点）。判据用**内容指纹**，不用 mtime |
+| verify-report 会在文件被改后继续被当证据用 | 报告 §2.22 | **新增 `STALE_REPORT`**：报告自称的 `changed_files` 之后又被改过 → 报明码。判据用**内容指纹**，不用 mtime。**分层**：日常 `gate` / 例行 `audit-round` / hook 审计只**提示**；**只有 `round-close` 归档时阻断**。它只提示报告可能旧了，**不声称**已保证验收新鲜 |
 | 两个宿主可能用各自旧的理解改写对方新写的数据 | Codex 决策 | **新增 `.task/` `schema_version`**：读到更高版本 → `UNSUPPORTED_SCHEMA`，**fail closed**：只允许查看，禁止改状态与收口；缺失/更低 → 走迁移兼容路径 |
+| **旧宿主（0.34）会若无其事地操作新版项目**（Codex 复核指出：`schema_version` 只保护"向前"，不保护"向后"） | Codex 评审 | **新增 `SCHEMA_REGRESSION_RISK`**：`.task/skill-lock.json` 已声明契约版本 N，而**活动轮或任务目录**的 `schema_version` < N → 拒写。真正的历史项目（锁里也无版本声明）继续兼容；契约只在写了新文件后升级，**读取路径绝不自动补写** |
 | 文档暗示 `reassign --window` | 报告 §2.2 | **保留准确的 `--owner`**（Codex 决定：`window` 会混淆 worker 与 verifier）。`assign-verifier --window` 专指 verifier，两者不混用。修正文档与模板 |
 
 ### 新增/变更的子命令与字段
 
 - 新子命令：`round-close`。`status` 新增 `--deep`。
-- 新诊断码：`UNSUPPORTED_SCHEMA`、`UNREPLAYABLE_COMMAND`、`STALE_REPORT`。
-- 新字段：`.task/*/manifest.json` 与 `.task/round.json` 顶层 `schema_version`；`rerun.json` 新增 `files`（内容指纹）与 `stale_report`。
+- 新诊断码：`UNSUPPORTED_SCHEMA`、`SCHEMA_REGRESSION_RISK`、`UNREPLAYABLE_COMMAND`、`STALE_REPORT`。
+- 新字段：`.task/*/manifest.json` 与 `.task/round.json` 顶层 `schema_version`；`.task/skill-lock.json` 顶层 `schema_version`（项目契约声明）；`rerun.json` 新增 `files`（内容指纹）与 `stale_report`。
 - `KNOWN_COMMANDS` 补齐原先缺失的 `assign-verifier` / `sync-worker-route` / `packet`（影响 `--root` 位置校验）。
+
+### 修掉的真 bug（都是被测试逼出来的）
+
+1. **`round-close` 会把"未就绪"当成"通过"归档。** `cmd_audit_round` 在 `ROUND_NOT_READY`（缺 receipt）时也返回 0，而 `round-close` 把"返回 0"当审计通过 → **归档了尚未就绪的轮**。现在收口路径下 `ROUND_NOT_READY` 与 `AUDIT SKIP` 都返回非 0，归档被拒绝。这正对应设计方案里点出的"提前归档 → 状态双写"风险。
+2. **`STALE_REPORT` 分层放错位置。** 第一版把过期报告在**所有**场景都做成 WARN，结果在最需要它的地方（收口）失效了——它能提示"报告可能旧了"，却无法阻止拿过期证据过关。
+3. **`SCHEMA_REGRESSION_RISK` 测试暴露的夹具不一致**：`test_block_staircase` 在 `init` 之后手写没有版本标记的 `round.json`，被守卫正确拦下。修的是夹具，不是放松守卫。
+4. **`KNOWN_COMMANDS` 缺 3 个命令**（`assign-verifier` / `sync-worker-route` / `packet`），导致 `--root` 位置校验在这些命令上失效。
 
 ### 纳入的跨宿主共同原则（Codex 确认）
 
@@ -36,7 +44,7 @@
 
 ### 测试
 
-- 本分支 `selftest` 全绿：**15 套**（新增 `test_dsh_035.py`，32 项断言，覆盖每个改动的正例与负例）。
+- 本分支 `selftest` 全绿：**15 套**（新增 `test_dsh_035.py`，**43 项断言**，每个改动都同时覆盖正例与负例）。
 - Codex 版 `test_retry_ladder.py` 在本分支上**原样通过（5/5）** —— 状态机计数语义未被本轮改动触及。
 - 关键正例（防误杀）：`node _tools/smoke.mjs`、`node --check src/app.js`、`py -3 -c "print(1)"`、`2>&1` / `> out.log` 重定向、**本机未安装的 `pytest`** 一律**不**报 `UNREPLAYABLE_COMMAND`。
 

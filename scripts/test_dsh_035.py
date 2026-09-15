@@ -110,22 +110,35 @@ def seed_task(
     return manifest_path
 
 
-def seed_round(root: Path, *, windows: list[str] | None = None, tasks: dict | None = None) -> Path:
-    return write_json(
+def seed_round(
+    root: Path,
+    *,
+    windows: list[str] | None = None,
+    tasks: dict | None = None,
+    receipts: list[str] | None = None,
+) -> Path:
+    """建一轮。`receipts` 全给时窗口状态设为 worker_done，用来越过 receipt 闸。"""
+    windows = windows or ["M2", "M5", "C1"]
+    receipts = receipts or []
+    window_status = {
+        window: ("worker_done" if window in receipts else "pending") for window in windows
+    }
+    write_json(
         root / ".task" / "round.json",
         {
             "schema_version": 1,
             "round_id": "ROUND-001",
-            "expected_windows": windows or ["M2", "M5", "C1"],
-            "receipts": [],
-            "window_status": {window: "pending" for window in (windows or ["M2", "M5", "C1"])},
+            "expected_windows": windows,
+            "receipts": receipts,
+            "window_status": window_status,
             "tasks": tasks if tasks is not None else {"M2": ["TASK-001"], "M5": [], "C1": []},
             "verifier_assignments": {},
             "gears": {"capability": "default", "collaboration": "P"},
             "hook_supervision": False,
             "check_requested": False,
         },
-    ) or (root / ".task" / "round.json")
+    )
+    return root / ".task" / "round.json"
 
 
 def main() -> int:
@@ -205,6 +218,76 @@ def main() -> int:
         "S-pos-future-schema-not-rewritten",
         unchanged.get("status") == "pending" and unchanged.get("schema_version") == 99,
         json.dumps(unchanged, ensure_ascii=False)[:200],
+    )
+
+    # ---------- A2. 回归方向：项目已声明 schema，却被旧宿主写出文件 ----------
+    # 模拟"0.34 创建的新轮"：锁已声明 1，但 round.json 缺版本标记。
+    regress = new_root("regress")
+    seed_task(regress, status="pending")
+    seed_round(regress)
+    write_json(regress / ".task" / "skill-lock.json", {"schema_version": 1, "skill_version": "0.35"})
+    regress_round = regress / ".task" / "round.json"
+    regress_data = read_json(regress_round)
+    regress_data.pop("schema_version", None)
+    write_json(regress_round, regress_data)
+    code, out = run(["--root", str(regress), "transition", "TASK-001", "in_progress", "--actor", "M1"])
+    expect(
+        "A2-neg-active-round-without-version-blocks-write",
+        code == 1 and "SCHEMA_REGRESSION_RISK" in out,
+        f"code={code} out={out}",
+    )
+    # 只读仍然可用
+    expect(
+        "A2-pos-readonly-still-works",
+        run(["--root", str(regress), "status"])[0] == 0,
+        run(["--root", str(regress), "status"])[1],
+    )
+
+    # 任务目录缺版本标记也要被拦住
+    regress2 = new_root("regress2")
+    seed_task(regress2, status="pending")
+    seed_round(regress2)
+    write_json(regress2 / ".task" / "skill-lock.json", {"schema_version": 1, "skill_version": "0.35"})
+    regress2_manifest = regress2 / ".task" / "TASK-001" / "manifest.json"
+    regress2_data = read_json(regress2_manifest)
+    regress2_data.pop("schema_version", None)
+    write_json(regress2_manifest, regress2_data)
+    code, out = run(["--root", str(regress2), "transition", "TASK-001", "in_progress", "--actor", "M1"])
+    expect(
+        "A2-neg-task-without-version-blocks-write",
+        code == 1 and "SCHEMA_REGRESSION_RISK" in out,
+        f"code={code} out={out}",
+    )
+
+    # **正例（关键）**：真正的历史项目——锁里也没有版本声明——必须继续兼容，
+    # 不能把"老项目的文件没有版本号"误判成被旧宿主改过。
+    legacy_project = new_root("legacyproj")
+    seed_task(legacy_project, status="pending")
+    legacy_round = seed_round(legacy_project)
+    legacy_manifest_path = legacy_project / ".task" / "TASK-001" / "manifest.json"
+    for path in (legacy_manifest_path, legacy_round):
+        legacy_data = read_json(path)
+        legacy_data.pop("schema_version", None)
+        write_json(path, legacy_data)
+    code, out = run(["--root", str(legacy_project), "transition", "TASK-001", "in_progress", "--actor", "M1"])
+    expect(
+        "A2-pos-pure-legacy-project-still-allowed",
+        code == 0 and "SCHEMA_REGRESSION_RISK" not in out,
+        f"code={code} out={out}",
+    )
+    # 而这个老项目一旦被当前版本写过（init 升级锁），再出现缺版本文件就要报
+    code, _ = run(["--root", str(legacy_project), "init", "TASK-002", "--owner", "M1"])
+    expect("A2-pos-init-upgrades-contract", code == 0, f"code={code}")
+    expect(
+        "A2-pos-lock-now-declares-schema",
+        read_json(legacy_project / ".task" / "skill-lock.json").get("schema_version") == 1,
+        (legacy_project / ".task" / "skill-lock.json").read_text(encoding="utf-8"),
+    )
+    code, out = run(["--root", str(legacy_project), "transition", "TASK-001", "in_progress", "--actor", "M1"])
+    expect(
+        "A2-neg-after-contract-upgrade-legacy-file-is-flagged",
+        code == 1 and "SCHEMA_REGRESSION_RISK" in out,
+        f"code={code} out={out}",
     )
 
     # ---------- B. status 只读 ----------
@@ -385,6 +468,38 @@ def main() -> int:
         f"code={code} out={out}",
     )
 
+    # ---------- D2. 收口时过期报告是**阻断项**（与日常 gate 的 WARN 分层） ----------
+    blocking = new_root("staleclose")
+    seed_task(blocking, status="done")
+    blocking_report = blocking / ".task" / "TASK-001" / "worker-report.json"
+    blocking_data = read_json(blocking_report)
+    blocking_data["changed_files"] = ["src/app.js"]
+    write_json(blocking_report, blocking_data)
+    # 给全 receipt，越过 receipt 闸，才能测到"过期报告"这一层
+    seed_round(blocking, receipts=["M2", "M5", "C1"])
+    code, out = run(["--root", str(blocking), "gate", "TASK-001"])
+    expect("D2-pos-baseline-ok", code == 0, f"code={code} out={out}")
+    (blocking / "src" / "app.js").write_text("console.log(3);\n", encoding="utf-8")
+    # 先证明同一状态下日常 gate 仍然是 PASS（提示而非阻断）
+    code, out = run(["--root", str(blocking), "gate", "TASK-001"])
+    expect(
+        "D2-pos-daily-gate-still-passes-with-warning",
+        code == 0 and "STALE_REPORT" in out and "RESULT PASS" in out,
+        f"code={code} out={out}",
+    )
+    # 门禁那次会把指纹基线刷新到"当时的内容"——这是必要的：门禁不可能知道报告是谁写的、
+    # 什么时候写的。所以只要没人再动文件，过期就"自愈"了。真实场景是门禁之后又被改：
+    (blocking / "src" / "app.js").write_text("console.log(4);\n", encoding="utf-8")
+    # 但真正收口时必须被拦下
+    code, out = run(["--root", str(blocking), "round-close"])
+    expect(
+        "D2-neg-round-close-blocked-by-stale-report",
+        code == 1
+        and "STALE_REPORT" in out
+        and (blocking / ".task" / "round.json").is_file(),
+        f"code={code} out={out}",
+    )
+
     # ---------- E. round-close ----------
     open_round = new_root("openround")
     seed_task(open_round, status="in_progress")
@@ -398,7 +513,7 @@ def main() -> int:
 
     closeable = new_root("close")
     seed_task(closeable, status="done")
-    seed_round(closeable)
+    seed_round(closeable, receipts=["M2", "M5", "C1"])
     code, out = run(["--root", str(closeable), "round-close"])
     archived = closeable / ".task" / "rounds" / "ROUND-001.json"
     expect(

@@ -1,0 +1,88 @@
+{
+  "note": "冻结的期望产物。两宿主应能对同一命令序列生成等价结果。",
+  "generated_at": "2026-09-15T09:42:57+00:00",
+  "skill_version": "0.35",
+  "schema_version": 1,
+  "expected_tokens": {
+    "gate": "RESULT PASS",
+    "audit_round": [
+      "BASIC_GATE_PASS",
+      "FULL_GATE_PASS",
+      "ROUND_READY_TO_CLOSE"
+    ]
+  },
+  "manifest": {
+    "schema_version": 1,
+    "task_id": "TASK-001",
+    "title": "合规样本",
+    "owner": "M2",
+    "track": "feature",
+    "risk": "medium",
+    "attempt": 0,
+    "status": "done",
+    "status_history": [
+      {
+        "status": "pending",
+        "at": "2026-09-15T09:42:52+00:00",
+        "by": "taskctl"
+      },
+      {
+        "status": "in_progress",
+        "at": "2026-09-15T09:42:53+00:00",
+        "by": "M1",
+        "reason": "transition pending -> in_progress"
+      },
+      {
+        "status": "worker_done",
+        "at": "2026-09-15T09:42:53+00:00",
+        "by": "worker",
+        "reason": "transition in_progress -> worker_done"
+      },
+      {
+        "status": "verifying",
+        "at": "2026-09-15T09:42:54+00:00",
+        "by": "verifier",
+        "reason": "transition worker_done -> verifying"
+      },
+      {
+        "status": "verified",
+        "at": "2026-09-15T09:42:54+00:00",
+        "by": "verifier",
+        "reason": "transition verifying -> verified"
+      },
+      {
+        "status": "integrated",
+        "at": "2026-09-15T09:42:55+00:00",
+        "by": "M1",
+        "reason": "transition verified -> integrated"
+      },
+      {
+        "status": "done",
+        "at": "2026-09-15T09:42:56+00:00",
+        "by": "M1",
+        "reason": "transition integrated -> done"
+      }
+    ],
+    "allowed_paths": [
+      "src/",
+      "tests/"
+    ],
+    "source_refs": [
+      {
+        "id": "S1",
+        "text": "提供 greet 函数",
+        "maps_to": [
+          "R1"
+        ]
+      }
+    ],
+    "requirements": [
+      {
+        "id": "R1",
+        "text": "greet 返回 hello <name>",
+        "verify": "py -3 -m tests.test_greet",
+        "verify_cmd": "py -3 -m tests.test_greet"
+      }
+    ]
+  }
+}

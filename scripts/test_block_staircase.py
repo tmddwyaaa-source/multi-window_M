@@ -49,9 +49,12 @@ def seed(root: Path) -> None:
     manifest["requirements"] = [{"id": "R1", "text": "x", "verify": "y"}]
     path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     # `reassign` 要求新负责人在本轮名单内，所以测试项目必须有 round.json。
+    # 必须带 `schema_version`：`init` 已把项目契约升到当前值，手写一份没有版本
+    # 标记的 round.json 会被 `SCHEMA_REGRESSION_RISK` 正确拦下。
     (root / ".task" / "round.json").write_text(
         json.dumps(
             {
+                "schema_version": 1,
                 "round_id": "ROUND-001",
                 "expected_windows": ["M2", "C1", "M5"],
                 "receipts": [],

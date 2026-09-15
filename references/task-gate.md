@@ -214,12 +214,15 @@ py -3 scripts/taskctl.py transition TASK-001 verified --actor verifier
 
 fail closed 覆盖所有写子命令（`init` / `round-init` / `round-close` / `receipt` / `request-check` / `assign-verifier` / `sync-worker-route` / `transition` / `reopen` / `attempt` / `reassign` / `hook-audit` / `migrate-project`）；只读子命令（`status` / `gate` / `audit-round` / `brief` / `packet` / `handoff` / `selftest`）仍可用。`gate` 与 `audit-round` 在更高 schema 下也会失败，因此**不能收口**。
 
+**反方向：`SCHEMA_REGRESSION_RISK`** —— `UNSUPPORTED_SCHEMA` 防"未来版写的数据被现在这版乱改"，但防不住"现在这版写的数据被**更旧的宿主**乱改"：旧宿主不认识 `schema_version`，既不会维护它也不报错。判据（机械可查）：`.task/skill-lock.json` 已声明契约版本 N，而**活动轮或某个任务目录**的 `schema_version` < N → 拒写，只读命令仍可用。真正的历史项目（锁里也无版本声明，N=0）继续兼容。契约只在写了新文件后升级（`init` / `round-init` / `migrate-project`），**读取路径绝不自动补写**。
+
 ## 收口检查：不可重放命令与过期报告（0.35）
 
 - **`UNREPLAYABLE_COMMAND`** —— Full Gate 会先对 `tests[].command` 与 `requirements[].verify_cmd` 做**形态**预检，然后才逐字重放。命中的形状：`<占位符>`（但不是 `2>&1` / `> out.txt` 这类合法重定向）、`**` / ` ``` ` / `…`、中文或全角说明文字、没有可识别运行器前缀、引用了像文件却不存在且属本任务范围（`_tools/` 或带扩展名的相对路径）的路径。
   它是**验收证据错误**：阻断收口，**不推进卡点计数**、不算一次失败。
   **边界**：不做二进制存在性判定——本机没装 `pytest` 时 `pytest -q tests/` 仍然算可重放。临时探针请写进报告的 `note`，`tests[]` 只放可执行且可重放的命令。
-- **`STALE_REPORT`** —— 报告自称的 `changed_files` 在报告之后又被改过 → 打**软提示**（`RESULT PASS` 不变、不进卡点）。判据是 `rerun.json` 里记录的**文件内容指纹**（SHA256 前 16 位），**不用 mtime**：文件系统时间戳粒度可能只有秒级，同秒写入会假阴性。首次 Gate 只建立基线，不报过期。
+- **`STALE_REPORT`** —— 报告自称的 `changed_files` 在报告之后又被改过 → 报明码。判据是 `rerun.json` 里记录的**文件内容指纹**（SHA256 前 16 位），**不用 mtime**：文件系统时间戳粒度可能只有秒级，同秒写入会假阴性。首次 Gate 只建立基线，不报过期。
+  **分层**：日常 `gate`、例行 `audit-round`、hook 触发的审计都只**提示**（`RESULT PASS` 不变、不进卡点）；**只有 `round-close` 归档时阻断**。它只**提示**报告可能旧了，**不能**声称已保证验收新鲜——指纹基线是"上次 Gate 时的工作区内容"，门禁无法知道报告是谁写的、什么时候写的。
 
 `migrate-project` 覆盖已有 `scripts/taskctl.py` 必须 `--force`，且先备份。报告与 lock 写完后再 `--check`。未 `MIGRATE_READY` 不要开发新功能。`--check` 不要求项目内所有任务 Full Gate PASS，只要求迁入的脚本能跑门禁、Hook 不改状态、负向路径仍被拒绝。
 
