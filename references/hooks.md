@@ -12,11 +12,11 @@
 
 ## Codex
 
-Codex 使用项目级 `.codex/hooks.json` 或用户级 `~/.codex/hooks.json`。建议先使用项目级配置。把 `{SKILL_ROOT}` 换成本机 Codex 技能目录（升级系列隔离副本为 `...\skills\multi-window-m-034`）：
+Codex 使用项目级 `.codex/hooks.json` 或用户级 `~/.codex/hooks.json`。建议先使用项目级配置。把 `{SKILL_ROOT}` 换成本机 Codex 技能目录（升级系列隔离副本为 `...\skills\multi-window-m-035`）：
 
 ```json
 {
-  "description": "multi-window-m-034 task audit",
+  "description": "multi-window-m-035 task audit",
   "hooks": {
     "Stop": [
       {
@@ -63,7 +63,7 @@ Codex 使用项目级 `.codex/hooks.json` 或用户级 `~/.codex/hooks.json`。�
 py -3 <SKILL_ROOT>\scripts\taskctl.py --root <工作区> hook-audit --source cursor-stop --host cursor
 ```
 
-隔离副本的 `SKILL_ROOT` 例：`C:\Users\user\.cursor\skills\multi-window-m-034`。
+隔离副本的 `SKILL_ROOT` 例：`C:\Users\user\.cursor\skills\multi-window-m-035`。
 
 - 不要设 `failClosed`。适配器始终退出码 0。
 - 诊断日志：`C:\Users\user\.cursor\hooks\last-cursor-stop.log`（无 `.task/` 也写）。
@@ -98,7 +98,7 @@ dsh 自己没有 hook 方言。它内置两个桥，用来在 agent run 中执�
 ```yaml
 - name: '@deepseek-ai/dsh-hooks-claude-code'
   config:
-    configPath: C:\Users\user\.dsh\skills\multi-window-m-034\scripts\dsh-hooks.example.json
+    configPath: C:\Users\user\.dsh\skills\multi-window-m-035\scripts\dsh-hooks.example.json
 ```
 
 `configPath` 在进程启动时读一次；相对路径按**启动 dsh 的目录**解析，所以这里用绝对路径最稳。桥没挂时 dsh 照样启动，只是没有 hook 证据。挂完要重启 dsh（bundle / 插件行变更不热重载）。

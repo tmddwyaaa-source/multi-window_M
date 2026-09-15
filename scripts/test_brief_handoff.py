@@ -167,7 +167,7 @@ def main() -> int:
         out,
     )
 
-    # 一任务两职责：C1 实现 + C2 独立验收（v0.34 对齐）
+    # 一任务两职责：C1 实现 + C2 独立验收（v0.35 对齐）
     verified_root = Path(tempfile.mkdtemp(prefix="v034-brief-"))
     write_verifiable_project(verified_root)
 

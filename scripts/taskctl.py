@@ -1,9 +1,22 @@
 #!/usr/bin/env python3
-"""Minimal, dependency-free task gate for the multi-window-m-034 skill (v0.34).
+"""Minimal, dependency-free task gate for the multi-window-m-035 skill (v0.35).
 
 Core behavior is host-agnostic. migrate-project backs up, writes a report and
 skill-lock, then copies. Feature work waits for migrate-project --check
 (MIGRATE_READY). Hook still does not mutate status.
+
+v0.35 adds the cross-host contract that Codex and DSH agreed on:
+  * `.task/manifest.json` and `.task/round.json` carry `schema_version`; a file
+    newer than this host reads -> UNSUPPORTED_SCHEMA and fail closed (view only).
+  * `status` is a read-only view: it never executes shell commands. Run
+    `gate --full` / `audit-round` for a real check, or `status --deep` to
+    explicitly re-run the Full Gate per task.
+  * `round-close` archives round.json to .task/rounds/ and only when every task
+    is done and the audit passes.
+  * UNREPLAYABLE_COMMAND prechecks `tests[].command` shapes before closure. It
+    is an evidence error: it never advances the block counter.
+  * STALE_REPORT warns (never fails) when a report's own changed_files were
+    modified after it was written, compared by content hash - never by mtime.
 
 Host evidence lives in two ledgers beside the round: `.task/hook-runs.jsonl`
 (cursor / codex / zcode stop hooks) and `.task/dsh-runs.jsonl` (DeepSeek
@@ -14,6 +27,7 @@ audit-round; neither writes status.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -51,6 +65,7 @@ TRANSITIONS = {
 KNOWN_COMMANDS = {
     "init",
     "round-init",
+    "round-close",
     "receipt",
     "request-check",
     "gate",
@@ -65,7 +80,10 @@ KNOWN_COMMANDS = {
     "reassign",
     "selftest",
     "brief",
+    "packet",
     "handoff",
+    "assign-verifier",
+    "sync-worker-route",
 }
 BRIEF_ROLES = {"worker", "scout", "verifier"}
 ROOT_PLACEMENT_ERROR = (
@@ -78,8 +96,42 @@ GENERATED_STATUS_MARKER = "<!-- taskctl:generated-status; do not edit -->"
 HOOK_LOG_MAX_LINES = 100
 DSH_LEDGER_MAX_LINES = 400
 RERUN_TIMEOUT_SEC = 60
-SKILL_VERSION = "0.34"
+SKILL_VERSION = "0.35"
 DSH_HOST = "dsh"
+# `.task/` 共同文件的**契约版本**，与 SKILL_VERSION（技能行为版本）分开：
+# 技能可以升版而 schema 不变。宿主**读写**用的是自己的版本常量
+# （DSH_READS_SCHEMA / DSH_WRITES_SCHEMA）。读到更高的 schema 必须 fail closed：
+# 只允许查看，禁止变更状态，禁止收口。这样两个宿主永远不会用"自己旧的理解"
+# 去静默改写"对方新写的数据"。
+SCHEMA_VERSION = 1
+SCHEMA_FIELD = "schema_version"
+DSH_READS_SCHEMA = SCHEMA_VERSION
+DSH_WRITES_SCHEMA = SCHEMA_VERSION
+UNSUPPORTED_SCHEMA = "UNSUPPORTED_SCHEMA"
+SCHEMA_KEY = "_schema"
+HARD_STOP = "HARD_STOP"
+REASSIGN_REQUIRED = "REASSIGN_REQUIRED"
+UNREPLAYABLE_COMMAND = "UNREPLAYABLE_COMMAND"
+# 命令里出现的像文件名的 token；只用来做"已声明却缺失"的定位，不做存在性判定。
+COMMAND_FILE_RE = re.compile(
+    r"[A-Za-z0-9_./@\\-]*[A-Za-z0-9_@-]\.(?:js|mjs|cjs|ts|py|json|md|txt|html|css|pas)\b"
+)
+# 会改写 `.task/` 共同文件的子命令：schema 比本宿主新时一律拒绝。
+MUTATING_COMMANDS = {
+    "init",
+    "round-init",
+    "round-close",
+    "receipt",
+    "request-check",
+    "assign-verifier",
+    "sync-worker-route",
+    "transition",
+    "reopen",
+    "attempt",
+    "reassign",
+    "hook-audit",
+    "migrate-project",
+}
 LOCK_REL = ".task/skill-lock.json"
 MIGRATE_REPORT_REL = "docs/MIGRATE-REPORT.md"
 SOURCE_HOST = {
@@ -170,6 +222,13 @@ def task_dir(root: Path, task_id: str) -> Path:
     return task_root(root) / task_id
 
 
+def normalized_path(value: Any) -> str:
+    text = str(value).replace("\\", "/").strip()
+    while text.startswith("./"):
+        text = text[2:]
+    return text
+
+
 def read_json(path: Path) -> Dict[str, Any]:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
@@ -180,6 +239,82 @@ def read_json(path: Path) -> Dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError(f"JSON root must be an object: {path}")
     return value
+
+
+def schema_version_of(data: Any) -> int:
+    """读取共同文件声明的 schema 版本；缺失视为 0（0.34 及更早的旧文件）。"""
+    if not isinstance(data, dict):
+        return 0
+    raw = data.get(SCHEMA_FIELD)
+    if isinstance(raw, bool) or raw is None:
+        return 0
+    try:
+        return max(0, int(raw))
+    except (TypeError, ValueError):
+        return -1
+
+
+def schema_mismatch(data: Any) -> bool:
+    """只有"文件比本宿主新"才阻断；文件更旧走迁移兼容路径。"""
+    return schema_version_of(data) > DSH_READS_SCHEMA
+
+
+def unsupported_schema_error(rel: str, data: Any) -> str:
+    return (
+        f"{UNSUPPORTED_SCHEMA}: {rel} declares schema_version="
+        f"{schema_version_of(data)}, but this host reads at most {DSH_READS_SCHEMA}. "
+        "只允许查看：禁止变更状态、禁止收口。请升级本技能版本后再继续。"
+    )
+
+
+def shared_schema_files(root: Path) -> List[Path]:
+    """共同文件清单：round.json 与每个任务的 manifest.json。"""
+    files: List[Path] = []
+    round_file = task_root(root) / "round.json"
+    if round_file.is_file():
+        files.append(round_file)
+    for directory in sorted(task_root(root).glob("TASK-*")):
+        manifest_file = directory / "manifest.json"
+        if manifest_file.is_file():
+            files.append(manifest_file)
+    return files
+
+
+def schema_problems(root: Path) -> List[str]:
+    """read-only 检查：列出所有"比本宿主新"的共同文件。"""
+    problems: List[str] = []
+    for path in shared_schema_files(root):
+        try:
+            data = read_json(path)
+        except ValueError:
+            continue
+        if schema_mismatch(data):
+            problems.append(
+                unsupported_schema_error(
+                    normalized_path(str(path.relative_to(root))), data
+                )
+            )
+    return problems
+
+
+def guard_mutation(root: Path) -> int:
+    """fail closed：schema 比本宿主新时，任何写操作都必须拒绝。
+
+    返回 0 表示可以继续；返回 1 表示已打印原因并必须中止。
+    """
+    problems = schema_problems(root)
+    if not problems:
+        return 0
+    print("RESULT FAIL")
+    for problem in problems:
+        print(f"- {problem}")
+    return 1
+
+
+def is_mutating_command(tokens: List[str]) -> bool:
+    """写共同文件的子命令。只读子命令（status/gate/audit/brief/packet/handoff/selftest）除外。"""
+    subcommand = next((token for token in tokens if token in KNOWN_COMMANDS), "")
+    return subcommand in MUTATING_COMMANDS
 
 
 def write_json(path: Path, value: Dict[str, Any]) -> None:
@@ -202,12 +337,24 @@ def current_attempts(manifest: Dict[str, Any]) -> int:
     """当前卡点的失败次数（不含首次派工）。
 
     与 `attempt` 的分工：`attempt` 是任务级历史（只驱动验收策略），
-    `block_attempts` 是**卡点级**计数（只驱动三级阶梯）。两者不重叠。
+    `block_attempts` 是**卡点级**计数（只驱动三级阶梯）。有 `block_id` 时
+    两者互不重叠。
+
+    例外（与 Codex 共同确认，保留）：**0.34 及更早的 manifest 没有
+    `block_attempts`**，此时回落到任务级 `attempt`，并视为
+    `LEGACY_UNSCOPED`。这是保守兼容：旧项目不会因为缺字段而**凭空多出**
+    重试次数。迁移时会在迁移报告里写明这一点。
     """
     block = manifest.get("block_attempts")
     if isinstance(block, dict) and block.get("block_id"):
         return max(0, int(block.get("attempts", 0) or 0))
     return max(0, int(manifest.get("attempt", 0) or 0))
+
+
+def is_legacy_unscoped(manifest: Dict[str, Any]) -> bool:
+    """`block_attempts` 缺失时，卡点计数回落到任务级 attempt 的旧数据形态。"""
+    block = manifest.get("block_attempts")
+    return not (isinstance(block, dict) and block.get("block_id"))
 
 
 def bump_block_attempt(
@@ -331,13 +478,6 @@ def valid_window(value: Any) -> bool:
     return isinstance(value, str) and bool(WINDOW_RE.fullmatch(value))
 
 
-def normalized_path(value: Any) -> str:
-    text = str(value).replace("\\", "/").strip()
-    while text.startswith("./"):
-        text = text[2:]
-    return text
-
-
 def gate_owned_paths(task_id: str) -> set[str]:
     return {
         normalized_path(f".task/{task_id}/manifest.json"),
@@ -375,9 +515,16 @@ def load_manifest(root: Path, task_id: str) -> Tuple[Optional[Dict[str, Any]], L
     if not path.exists():
         return None, [f"{task_id}: missing {path.relative_to(root)}"]
     try:
-        return read_json(path), []
+        data = read_json(path)
     except ValueError as exc:
         return None, [str(exc)]
+    if schema_mismatch(data):
+        return None, [
+            unsupported_schema_error(
+                normalized_path(str(path.relative_to(root))), data
+            )
+        ]
+    return data, []
 
 
 def validate_manifest(manifest: Dict[str, Any], task_id: str) -> List[str]:
@@ -910,6 +1057,187 @@ def git_changed_files(root: Path) -> Tuple[str, List[str]]:
     return "ok", unique
 
 
+def sha256_file(path: Path) -> str:
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()[:16]
+    except OSError:
+        return "unreadable"
+
+
+def content_fingerprint(root: Path, paths: List[str]) -> Dict[str, str]:
+    """按**内容**记录工作区指纹；删除的文件记为 absent。"""
+    fingerprint: Dict[str, str] = {}
+    for raw in sorted(set(paths)):
+        normalized = normalized_path(raw)
+        candidate = root / normalized
+        fingerprint[normalized] = sha256_file(candidate) if candidate.is_file() else "absent"
+    return fingerprint
+
+
+def recorded_fingerprint(root: Path, task_id: str) -> Dict[str, str]:
+    """上次真跑 Gate 时记录的**内容**指纹（来自 rerun.json）。"""
+    path = task_dir(root, task_id) / "rerun.json"
+    if not path.is_file():
+        return {}
+    try:
+        data = read_json(path)
+    except ValueError:
+        return {}
+    files = data.get("files")
+    if not isinstance(files, dict):
+        return {}
+    return {normalized_path(key): str(value) for key, value in files.items()}
+
+
+def fingerprint_sources(diff_files: List[str], report: Optional[Dict[str, Any]]) -> List[str]:
+    """指纹覆盖"工作区改动"与"报告自称改动"的并集。
+
+    只看 git diff 不够：非 git 项目（或改动还没进 diff）会漏掉真正的过期证据。
+    """
+    paths = list(diff_files)
+    if isinstance(report, dict) and isinstance(report.get("changed_files"), list):
+        paths.extend(str(value) for value in report["changed_files"] if value)
+    return sorted({normalized_path(value) for value in paths if str(value).strip()})
+
+
+def stale_report_errors(
+    root: Path,
+    report: Optional[Dict[str, Any]],
+    task_id: str,
+    previous: Dict[str, str],
+) -> List[str]:
+    """报告是否覆盖了"自上次 Gate 之后又被改过"的文件。
+
+    只用**内容**比对，绝不看 mtime（时间戳可能只有秒级粒度，同秒写入会假阴性）。
+    `previous` 必须是**上次记录的**指纹：拿本次刚算出的指纹去比等于自己跟自己比，
+    永远判不出过期。
+    这是**软提示**：调用方只登记，不判 FAIL、不进卡点计数器。
+    """
+    if not isinstance(report, dict):
+        return []
+    changed = report.get("changed_files")
+    if not isinstance(changed, list):
+        return []
+    if not previous:
+        # 还没有基线：记下本次指纹，下次再比。
+        return []
+    stale: List[str] = []
+    for raw in sorted({normalized_path(value) for value in changed if value}):
+        candidate = root / raw
+        if not candidate.is_file():
+            continue
+        if previous.get(raw, "absent") != sha256_file(candidate):
+            stale.append(raw)
+    if stale:
+        return [
+            f"STALE_REPORT: {task_id} worker-report.json covers changed_files that were "
+            f"modified after it was written: {', '.join(stale)}；请先重跑验收命令并在报告里更新证据"
+        ]
+    return []
+
+
+def validate_manifest_commands(manifest: Dict[str, Any]) -> List[str]:
+    """任务侧命令收口检查（不执行）。
+
+    `requirements[].verify` 若是自然语言描述就会被忽略；只有 `verify_cmd` /
+    可执行形态的 `verify` 才被收集。这里额外拦住"明显不可执行"的 verify_cmd。
+    """
+    errors: List[str] = []
+    for requirement in manifest.get("requirements", []):
+        if not isinstance(requirement, dict):
+            continue
+        command = requirement.get("verify_cmd")
+        if not isinstance(command, str) or not command.strip():
+            continue
+        reason = unreplayable_reason(command.strip())
+        if reason:
+            errors.append(
+                f"{UNREPLAYABLE_COMMAND}: requirements[{requirement.get('id', '?')}].verify_cmd "
+                f"{reason}: {command.strip()}"
+            )
+    return errors
+
+
+def _angle_bracket_placeholder(command: str) -> bool:
+    """`<...>` 占位符，但不是 shell 重定向（`2>&1` / `> out.txt` / `< in.txt`）。"""
+    for match in re.finditer(r"\s<[^<>]*>", command):
+        if command[match.start() + 1] == ">":
+            continue
+        return True
+    return False
+
+
+def unreplayable_reason(command: str) -> str:
+    """返回不可重放的原因；空字符串表示"形态上可重放"。
+
+    这是**只读收口检查**：只证明它不可执行，不证明它可执行。因此绝不改变
+    状态机、绝不推进 block 计数，也绝不因为二进制不在 PATH 而拒绝——
+    合法但本机未安装的测试运行器不能算工人的错。
+    """
+    if not isinstance(command, str) or not command.strip():
+        return "is empty"
+    text = command.strip()
+    if _angle_bracket_placeholder(text):
+        return "contains a <...> placeholder (executing it would be a shell error)"
+    for marker in ("**", "```", "…"):
+        if marker in text:
+            return f"contains non-command marker {marker!r}"
+    if any(ord(char) > 0x2000 for char in text):
+        return "contains full-width prose punctuation (not a command)"
+    if re.search(r"[\u4e00-\u9fff]", text):
+        return "contains Chinese prose (not a command)"
+    if text[0] in ("'", '"') and text[-1] == text[0]:
+        return "is wrapped in quotes (would be recorded, not executed)"
+    if not text.lower().startswith(COMMAND_PREFIXES):
+        return "is not an executable command (no recognized runner prefix)"
+    return ""
+
+
+def task_local_command_file(root: Path, token: str) -> Optional[str]:
+    """若 token 指向一个已声明却缺失的任务内文件，返回它的相对路径。"""
+    normalized = normalized_path(token.strip("\"'"))
+    if not normalized or normalized.startswith("-"):
+        return None
+    lowered = normalized.lower()
+    if normalized.startswith("/") or lowered.startswith(("<", ">", "http:", "https:")):
+        return None
+    if normalized.startswith(".."):
+        return None
+    candidate = root / normalized
+    if candidate.exists():
+        return None
+    head = normalized.split("/", 1)[0].lower()
+    extension = Path(normalized).suffix.lower()
+    looks_like_file = extension in {".js", ".mjs", ".cjs", ".ts", ".py", ".json", ".md", ".txt", ".html", ".css", ".pas"}
+    if head == "_tools" or (looks_like_file and "/" in normalized):
+        return normalized
+    return None
+
+
+def unreplayable_command_errors(root: Path, commands: List[str]) -> List[str]:
+    """收口前对 `tests[].command` / `verify_cmd` 做形态预检。"""
+    errors: List[str] = []
+    for command in commands:
+        reason = unreplayable_reason(command)
+        if reason:
+            errors.append(f"{UNREPLAYABLE_COMMAND}: tests[].command {reason}: {command}")
+            continue
+        missing = [
+            found
+            for found in (
+                task_local_command_file(root, token)
+                for token in COMMAND_FILE_RE.findall(command)
+            )
+            if found
+        ]
+        if missing:
+            errors.append(
+                f"{UNREPLAYABLE_COMMAND}: tests[].command references a missing file "
+                f"({', '.join(sorted(set(missing)))}): {command}"
+            )
+    return errors
+
+
 def run_verify_command(root: Path, command: str) -> Dict[str, Any]:
     try:
         completed = subprocess.run(
@@ -996,6 +1324,18 @@ def validate_evidence_rerun(root: Path, task_id: str, manifest: Dict[str, Any]) 
             )
 
     commands = collect_verify_commands(manifest, report)
+    # 收口前先做"不可重放"形态预检：报明确诊断码，而不是让 shell 去撞一个
+    # 含糊的 exit 1。它是验收证据错误，**不推进 block 计数**。
+    precheck = unreplayable_command_errors(root, commands)
+    if precheck:
+        emit_unreplayable_command(precheck)
+    errors.extend(precheck)
+    # 报告是否覆盖了"自上次 Gate 之后又被改过"的文件：软提示，只登记不判 FAIL。
+    # 必须与**上次记录的**指纹比，否则等于自己跟自己比。
+    fingerprint = content_fingerprint(root, fingerprint_sources(diff_files, report))
+    stale = stale_report_errors(root, report, task_id, recorded_fingerprint(root, task_id))
+    if stale:
+        emit_stale_report(stale)
     command_results = [run_verify_command(root, command) for command in commands]
     for result in command_results:
         if result["exit_code"] != 0:
@@ -1010,7 +1350,11 @@ def validate_evidence_rerun(root: Path, task_id: str, manifest: Dict[str, Any]) 
             "at": now_iso(),
             "git": git_status,
             "diff_files": diff_files,
+            # 内容指纹：收口判断"报告是否已经过期"用**内容**，不用 mtime。
+            # 文件系统时间戳粒度可能只有秒级，同秒写入会假阴性。
+            "files": fingerprint,
             "commands": command_results,
+            "stale_report": bool(stale),
             "evidence_ok": evidence_ok and not any(
                 "missing evidence file" in error or "missing path" in error
                 for error in errors
@@ -1086,6 +1430,22 @@ def emit_parallel_fail(errors: List[str]) -> None:
         print("PARALLEL_FAIL")
 
 
+def emit_unreplayable_command(errors: List[str]) -> None:
+    if any(UNREPLAYABLE_COMMAND in str(error) for error in errors):
+        print(UNREPLAYABLE_COMMAND)
+
+
+def emit_stale_report(errors: List[str]) -> None:
+    for error in errors:
+        if "STALE_REPORT" in str(error):
+            print(str(error))
+
+
+def emit_unsupported_schema(errors: List[str]) -> None:
+    if any(UNSUPPORTED_SCHEMA in str(error) for error in errors):
+        print(UNSUPPORTED_SCHEMA)
+
+
 def emit_close_tokens(errors: List[str]) -> None:
     emit_policy_conflict(errors)
     emit_requirement_coverage(errors)
@@ -1093,6 +1453,8 @@ def emit_close_tokens(errors: List[str]) -> None:
     emit_hook_evidence(errors)
     emit_parallel_fail(errors)
     emit_assignment_tokens(errors)
+    emit_unreplayable_command(errors)
+    emit_unsupported_schema(errors)
 
 
 def emit_assignment_tokens(errors: List[str]) -> None:
@@ -1137,7 +1499,7 @@ def validate_assignments(
     required: bool,
     worker_window: str = "",
 ) -> List[str]:
-    """一任务两职责的一致性门禁（v0.34 对齐）。
+    """一任务两职责的一致性门禁（v0.35 对齐）。
 
     - 实现路由 `round.tasks[T]` 必须等于 `manifest.owner`；
     - 需要独立验收时必须有 `verifier_assignments[T]`，且它是本轮正式窗、不同于 owner/worker；
@@ -1238,6 +1600,10 @@ def validate_verification(root: Path, task_id: str, manifest: Dict[str, Any], re
 
 
 def gate(root: Path, task_id: str, phase: str) -> List[str]:
+    schema_errors = schema_problems(root)
+    if schema_errors:
+        # fail closed：schema 比本宿主新 → 只允许查看，禁止收口。
+        return schema_errors
     manifest, errors = load_manifest(root, task_id)
     if manifest is None:
         return errors
@@ -1245,6 +1611,7 @@ def gate(root: Path, task_id: str, phase: str) -> List[str]:
     if policy["conflict"]:
         return [policy["conflict"]]
     errors.extend(validate_manifest(manifest, task_id))
+    errors.extend(validate_manifest_commands(manifest))
     errors.extend(validate_worker(root, task_id, manifest))
     if phase == "full":
         errors.extend(
@@ -1275,6 +1642,71 @@ def round_path(root: Path) -> Path:
     return task_root(root) / "round.json"
 
 
+def rounds_archive_dir(root: Path) -> Path:
+    return task_root(root) / "rounds"
+
+
+def archive_round_path(root: Path, round_id: str) -> Path:
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "-", str(round_id or "")).strip("-") or "round"
+    return rounds_archive_dir(root) / f"{safe}.json"
+
+
+def cmd_round_close(args: argparse.Namespace, root: Path) -> int:
+    """整轮收口：全部任务 done 且审计通过，才原子归档 round.json。
+
+    绝不自动触发，绝不归档未完成的轮。归档是**复制**到 `.task/rounds/` 后再
+    删除 `.task/round.json`；任一步失败都不留下"半关"的轮。
+    """
+    try:
+        data = read_json(round_path(root))
+    except ValueError as exc:
+        print(f"ROUND_CLOSE_FAIL: {exc}")
+        return 1
+    if schema_mismatch(data):
+        print(f"ROUND_CLOSE_FAIL: {unsupported_schema_error('.task/round.json', data)}")
+        return 1
+
+    task_ids = task_ids_for_round(data)
+    not_done: List[str] = []
+    for task_id in task_ids:
+        manifest, errors = load_manifest(root, task_id)
+        if manifest is None:
+            not_done.append(f"{task_id}(unreadable)")
+            continue
+        status = str(manifest.get("status", "pending"))
+        if status != "done":
+            not_done.append(f"{task_id}={status}")
+    if not_done:
+        print("ROUND_CLOSE_FAIL: 整轮仍有未完成任务，禁止归档")
+        for item in not_done:
+            print(f"- {item}")
+        return 1
+
+    data["check_requested"] = True
+    write_json(round_path(root), data)
+    if cmd_audit_round(root) != 0:
+        print("ROUND_CLOSE_FAIL: 审计未通过，round.json 保持原位")
+        return 1
+
+    round_id = str(data.get("round_id") or "round")
+    destination = archive_round_path(root, round_id)
+    if destination.exists():
+        print(f"ROUND_CLOSE_FAIL: archive already exists: {destination.relative_to(root)}")
+        return 1
+    rounds_archive_dir(root).mkdir(parents=True, exist_ok=True)
+    data["closed_at"] = now_iso()
+    data["closed_by"] = args.actor
+    # 先原子写归档，再删除原位文件：中途失败最多留下一份重复归档，不会丢轮。
+    staged = destination.with_suffix(".json.tmp")
+    write_json(staged, data)
+    os.replace(staged, destination)
+    round_path(root).unlink()
+    print(f"ROUND_CLOSED {round_id}")
+    print(f"ARCHIVED {normalized_path(str(destination.relative_to(root)))}")
+    print("NEXT: taskctl.py round-init <new-round-id> ...")
+    return 0
+
+
 def cmd_init(args: argparse.Namespace, root: Path) -> int:
     require_task_id(args.task_id)
     directory = task_dir(root, args.task_id)
@@ -1284,6 +1716,7 @@ def cmd_init(args: argparse.Namespace, root: Path) -> int:
     directory.mkdir(parents=True)
     (directory / "evidence").mkdir()
     manifest = {
+        SCHEMA_FIELD: DSH_WRITES_SCHEMA,
         "task_id": args.task_id,
         "title": args.title or "",
         "owner": args.owner or "M1",
@@ -1352,6 +1785,7 @@ def cmd_round_init(args: argparse.Namespace, root: Path) -> int:
     write_json(
         path,
         {
+            SCHEMA_FIELD: DSH_WRITES_SCHEMA,
             "round_id": args.round_id,
             "expected_windows": windows,
             "receipts": [],
@@ -1551,6 +1985,9 @@ def cmd_gate(args: argparse.Namespace, root: Path) -> int:
     if errors:
         emit_policy_conflict(errors)
         emit_requirement_coverage(errors)
+        emit_unsupported_schema(errors)
+        emit_unreplayable_command(errors)
+        emit_stale_report(errors)
         print("RESULT FAIL")
         for error in errors:
             print(f"- {error}")
@@ -1920,7 +2357,7 @@ def cmd_migrate_project(args: argparse.Namespace, root: Path) -> int:
     lock["status"] = "copied"
     write_json(lock_path(root), lock)
     write_migrate_report(root, lock)
-    print(f"MIGRATED {dest_rel} from multi-window-m-034 v{SKILL_VERSION}")
+    print(f"MIGRATED {dest_rel} from multi-window-m-035 v{SKILL_VERSION}")
     print("NEXT: py -3 scripts/taskctl.py --root <project> migrate-project --check")
     print("Do not continue feature work until MIGRATE_READY")
     return 0
@@ -2260,7 +2697,36 @@ def render_status_markdown(root: Path) -> str:
     return "\n".join(lines) + "\n"
 
 
-def cmd_status(root: Path, markdown: bool = False, write: bool = False) -> int:
+def recorded_gate_state(root: Path, task_id: str) -> str:
+    """从 `.task/<task>/rerun.json` 读出**上次真跑 Gate** 的结果。
+
+    `status` 是只读视图：它必须便宜（报告 §4.8：跑一次 status 会因为逐任务
+    重跑 ~90s 的回归命令而超时）。因此这里只读已记录的结论，不重新执行任何
+    shell 命令。要真跑，用 `gate --full` 或 `audit-round`。
+    """
+    path = task_dir(root, task_id) / "rerun.json"
+    if not path.is_file():
+        return "GATE_NOT_RUN"
+    try:
+        data = read_json(path)
+    except ValueError:
+        return "GATE_UNKNOWN"
+    commands = data.get("commands")
+    if not isinstance(commands, list):
+        return "GATE_UNKNOWN"
+    if data.get("stale_report"):
+        return "GATE_STALE"
+    return "GATE_PASS" if all(
+        isinstance(item, dict) and int(item.get("exit_code", 1)) == 0 for item in commands
+    ) else "GATE_FAIL"
+
+
+def cmd_status(
+    root: Path,
+    markdown: bool = False,
+    write: bool = False,
+    deep: bool = False,
+) -> int:
     if write:
         markdown = True
     if not task_root(root).is_dir():
@@ -2309,7 +2775,10 @@ def cmd_status(root: Path, markdown: bool = False, write: bool = False) -> int:
             print(f"TASK {directory.name}: invalid manifest ({exc})")
             continue
         task_id = str(manifest.get("task_id", directory.name))
-        gate_state = "GATE_PASS" if not gate(root, task_id, "full") else "GATE_FAIL"
+        if deep:
+            gate_state = "GATE_PASS" if not gate(root, task_id, "full") else "GATE_FAIL"
+        else:
+            gate_state = recorded_gate_state(root, task_id)
         print(f"TASK {directory.name}: {manifest.get('status', 'pending')} / {gate_state}")
     return 0
 
@@ -3208,7 +3677,7 @@ def root_after_subcommand(tokens: List[str]) -> bool:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="multi-window-m-034 v0.34 task gate",
+        description="multi-window-m-035 v0.35 task gate",
         epilog="Place --root before the subcommand: taskctl.py --root <dir> status",
     )
     parser.add_argument(
@@ -3304,7 +3773,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="dsh only: pair writes a complete start/end pair in one call (default "
         "for dsh sources), record writes a single observation entry",
     )
-    migrate = sub.add_parser("migrate-project", help="backup, report, copy this v0.34 taskctl, then --check")
+    migrate = sub.add_parser("migrate-project", help="backup, report, copy this v0.35 taskctl, then --check")
     migrate.add_argument("--destination", default="scripts/taskctl.py")
     migrate.add_argument("--force", action="store_true", help="replace an existing destination after backup")
     migrate.add_argument(
@@ -3312,7 +3781,10 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="run basic/full/hook/negative smokes; require MIGRATE_READY before new work",
     )
-    status_parser = sub.add_parser("status", help="show window and task states")
+    status_parser = sub.add_parser(
+        "status",
+        help="show window and task states (read-only; never executes shell commands)",
+    )
     status_parser.add_argument(
         "--markdown",
         action="store_true",
@@ -3323,6 +3795,18 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="write docs/TASK-STATUS.md (implies --markdown); do not hand-edit that file",
     )
+    status_parser.add_argument(
+        "--deep",
+        action="store_true",
+        help="explicitly re-run the Full Gate for every task; this executes regression "
+        "commands and can take minutes, so it is off by default",
+    )
+
+    round_close = sub.add_parser(
+        "round-close",
+        help="archive round.json to .task/rounds/ (only when every task is done and the audit passes)",
+    )
+    round_close.add_argument("--actor", choices=["M1"], default="M1")
 
     transition = sub.add_parser("transition", help="change a task status through the controlled state machine")
     transition.add_argument("task_id")
@@ -3395,11 +3879,20 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(tokens)
     root = find_project_root(Path(args.root).resolve() if args.root else None)
+    # fail closed：`.task/` 声明了比本宿主更新的 schema 时，禁止任何写操作。
+    # 只读子命令（status / gate / audit-round / brief / packet / handoff / selftest）
+    # 仍然可用，便于用户查看"更新版宿主写出来的状态"。
+    if is_mutating_command(tokens):
+        blocked = guard_mutation(root)
+        if blocked:
+            return blocked
     try:
         if args.command == "init":
             return cmd_init(args, root)
         if args.command == "round-init":
             return cmd_round_init(args, root)
+        if args.command == "round-close":
+            return cmd_round_close(args, root)
         if args.command == "receipt":
             return cmd_receipt(args, root)
         if args.command == "request-check":
@@ -3428,6 +3921,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
                 root,
                 markdown=bool(getattr(args, "markdown", False)),
                 write=bool(getattr(args, "write", False)),
+                deep=bool(getattr(args, "deep", False)),
             )
         if args.command == "transition":
             return cmd_transition(args, root)

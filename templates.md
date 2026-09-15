@@ -96,7 +96,7 @@ py -3 scripts/taskctl.py --root <项目根> status --markdown --write
 把 `handoff` 与 `docs/TASK-STATUS.md` 当接班状态源。然后再：
 
 ```text
-/multi-window-m-034
+/multi-window-m-035
 我是 M1。已阅读 handoff 生成物。按未闭环项继续；查收仍须本窗重跑；M1 唯一收口。
 先自报挡位。不要报加分（除非本窗已确认并点名）。不要手写转述代替 brief。
 ```
@@ -142,7 +142,7 @@ py -3 scripts/taskctl.py --root <项目根> brief TASK-001 --role verifier
 ### 斥候
 
 ```text
-/multi-window-m-034
+/multi-window-m-035
 我是 {窗号}。当前角色：斥候（只调查，禁止改任何文件）。
 请读 {项目路径}/docs/MODULE-REGISTRY.md 中【{窗号}】章节。
 主题：{一句话}
@@ -161,7 +161,7 @@ py -3 scripts/taskctl.py --root <项目根> brief TASK-001 --role verifier
 ### 主力
 
 ```text
-/multi-window-m-034
+/multi-window-m-035
 我是 {窗号}。当前角色：主力（只实现，最小改动）。
 请读 Registry 中【{窗号}】章节。依据斥候报告（若有则以下为准）：
 ---
@@ -182,7 +182,7 @@ py -3 scripts/taskctl.py --root <项目根> brief TASK-001 --role verifier
 ### 搜剿 — 子窗口自检
 
 ```text
-/multi-window-m-034
+/multi-window-m-035
 我是 {窗号}。当前角色：搜剿（禁止修改实现代码）。
 卡点签名：{现象 + 位置/测试}
 本轮循环计数：{k}/4
@@ -202,7 +202,7 @@ py -3 scripts/taskctl.py --root <项目根> brief TASK-001 --role verifier
 ### M1 最终查收
 
 ```text
-/multi-window-m-034
+/multi-window-m-035
 我是 M1。当前角色：搜剿（只验收，禁止顺手改子模块来“修完”）。
 用户汇报：{窗号} 已完成，请查收。（或：所有窗口已完成 = 只核本轮派工名单）
 

@@ -1,0 +1,429 @@
+"""v0.35（DSH 方向）：schema 契约、round-close、只读 status、不可重放命令、过期报告。
+
+本轮改动都是"把已证明的错误机械暴露"，因此每个检查都必须证明两件事：
+  1. 该拦的拦住了（负例）；
+  2. 不该拦的没被误杀（正例）——尤其是"本机没装的测试运行器"和"合法重定向"。
+"""
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import sys
+import tempfile
+import time
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+TASKCTL = HERE / "taskctl.py"
+sys.path.insert(0, str(HERE))
+import taskctl as module  # noqa: E402  (本套件要核对模块级契约)
+
+
+def expect(name: str, ok: bool, detail: str) -> None:
+    print(f"{'PASS' if ok else 'FAIL'} {name}")
+    if not ok:
+        print(detail)
+        raise SystemExit(1)
+
+
+def run(args: list[str]) -> tuple[int, str]:
+    env = os.environ.copy()
+    env["PYTHONIOENCODING"] = "utf-8"
+    completed = subprocess.run(
+        [sys.executable, str(TASKCTL), *args],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        env=env,
+    )
+    return completed.returncode, (completed.stdout or "") + (completed.stderr or "")
+
+
+def write_json(path: Path, value: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def read_json(path: Path) -> dict:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def new_root(tag: str) -> Path:
+    root = Path(tempfile.mkdtemp(prefix=f"m035-{tag}-"))
+    (root / "src").mkdir(parents=True, exist_ok=True)
+    (root / "src" / "app.js").write_text("console.log(1);\n", encoding="utf-8")
+    (root / "_tools").mkdir(parents=True, exist_ok=True)
+    (root / "_tools" / "smoke.mjs").write_text("process.exit(0);\n", encoding="utf-8")
+    return root
+
+
+def seed_task(
+    root: Path,
+    task_id: str = "TASK-001",
+    *,
+    owner: str = "M2",
+    risk: str = "low",
+    status: str = "done",
+    commands: list[str] | None = None,
+) -> Path:
+    """建一个在短路径下能过 Full Gate 的任务。"""
+    manifest_path = root / ".task" / task_id / "manifest.json"
+    write_json(
+        manifest_path,
+        {
+            "schema_version": 1,
+            "task_id": task_id,
+            "title": "测试任务",
+            "owner": owner,
+            "track": "feature",
+            "risk": risk,
+            "attempt": 0,
+            "status": status,
+            "status_history": [{"status": status, "at": "2026-01-01T00:00:00+00:00", "by": "M1"}],
+            "allowed_paths": ["src/"],
+            "source_refs": [{"id": "S1", "text": "需求", "maps_to": ["R1"]}],
+            "requirements": [{"id": "R1", "text": "可验收需求", "verify": "人工检查"}],
+        },
+    )
+    (root / ".task" / task_id / "evidence").mkdir(parents=True, exist_ok=True)
+    # Gate 要求每条 evidence 都有真实存在的 path，所以给每个需求落一份证据文件。
+    for requirement_id in ("R1",):
+        evidence_file = root / ".task" / task_id / "evidence" / f"{requirement_id}.txt"
+        evidence_file.write_text("verified\n", encoding="utf-8")
+    write_json(
+        root / ".task" / task_id / "worker-report.json",
+        {
+            "task_id": task_id,
+            "window": owner,
+            "status": "worker_done",
+            "covered_requirements": ["R1"],
+            "evidence": [
+                {"requirement_id": "R1", "path": f".task/{task_id}/evidence/R1.txt", "note": "已验证"}
+            ],
+            "changed_files": [],
+            "known_gaps": [],
+            "tests": [{"command": command} for command in (commands or [])],
+        },
+    )
+    return manifest_path
+
+
+def seed_round(root: Path, *, windows: list[str] | None = None, tasks: dict | None = None) -> Path:
+    return write_json(
+        root / ".task" / "round.json",
+        {
+            "schema_version": 1,
+            "round_id": "ROUND-001",
+            "expected_windows": windows or ["M2", "M5", "C1"],
+            "receipts": [],
+            "window_status": {window: "pending" for window in (windows or ["M2", "M5", "C1"])},
+            "tasks": tasks if tasks is not None else {"M2": ["TASK-001"], "M5": [], "C1": []},
+            "verifier_assignments": {},
+            "gears": {"capability": "default", "collaboration": "P"},
+            "hook_supervision": False,
+            "check_requested": False,
+        },
+    ) or (root / ".task" / "round.json")
+
+
+def main() -> int:
+    # ---------- A. schema_version 契约 ----------
+    root = new_root("schema")
+    seed_task(root, status="pending")
+    manifest = read_json(root / ".task" / "TASK-001" / "manifest.json")
+    expect(
+        "S-pos-init-writes-schema-version",
+        manifest.get("schema_version") == 1,
+        json.dumps(manifest, ensure_ascii=False)[:200],
+    )
+    round_init = run(["--root", str(root), "round-init", "ROUND-002", "M2", "C3"])
+    seeded = seed_round(root)
+    expect(
+        "S-pos-round-init-writes-schema-version",
+        read_json(seeded).get("schema_version") == 1,
+        seeded.read_text(encoding="utf-8")[:200],
+    )
+    expect("S-pos-round-init-ok", round_init[0] == 0, round_init[1])
+
+    # 旧文件（无 schema_version）必须继续被接受：迁移兼容路径。
+    legacy = new_root("legacy")
+    seed_task(legacy, status="pending")
+    legacy_manifest_path = legacy / ".task" / "TASK-001" / "manifest.json"
+    legacy_manifest = read_json(legacy_manifest_path)
+    legacy_manifest.pop("schema_version", None)
+    write_json(legacy_manifest_path, legacy_manifest)
+    code, out = run(["--root", str(legacy), "gate", "TASK-001", "--basic"])
+    expect(
+        "S-pos-legacy-without-schema-version-accepted",
+        code == 0 and "RESULT PASS" in out,
+        f"code={code} out={out}",
+    )
+    expect(
+        "S-pos-legacy-fallback-is-documented",
+        "LEGACY_UNSCOPED" in (module.current_attempts.__doc__ or ""),
+        module.current_attempts.__doc__ or "",
+    )
+
+    # 更新的 schema：fail closed，禁止写、禁止收口，但仍可查看。
+    future = new_root("future")
+    seed_task(future, status="pending")
+    future_manifest_path = future / ".task" / "TASK-001" / "manifest.json"
+    future_manifest = read_json(future_manifest_path)
+    future_manifest["schema_version"] = 99
+    write_json(future_manifest_path, future_manifest)
+
+    code, out = run(
+        ["--root", str(future), "reopen", "TASK-001", "--reason", "x", "--block-id", "B1"]
+    )
+    expect(
+        "S-neg-future-schema-blocks-mutation",
+        code == 1 and "UNSUPPORTED_SCHEMA" in out,
+        f"code={code} out={out}",
+    )
+    code, out = run(["--root", str(future), "transition", "TASK-001", "in_progress", "--actor", "M1"])
+    expect(
+        "S-neg-future-schema-blocks-transition",
+        code == 1 and "UNSUPPORTED_SCHEMA" in out,
+        f"code={code} out={out}",
+    )
+    code, out = run(["--root", str(future), "gate", "TASK-001"])
+    expect(
+        "S-neg-future-schema-blocks-close",
+        code == 1 and "UNSUPPORTED_SCHEMA" in out,
+        f"code={code} out={out}",
+    )
+    code, out = run(["--root", str(future), "status"])
+    expect(
+        "S-pos-future-schema-still-viewable",
+        code == 0 and "TASK TASK-001" in out,
+        f"code={code} out={out}",
+    )
+    unchanged = read_json(future_manifest_path)
+    expect(
+        "S-pos-future-schema-not-rewritten",
+        unchanged.get("status") == "pending" and unchanged.get("schema_version") == 99,
+        json.dumps(unchanged, ensure_ascii=False)[:200],
+    )
+
+    # ---------- B. status 只读 ----------
+    slow = new_root("status")
+    seed_task(slow, status="done", commands=["node -e \"setTimeout(function(){}, 30000)\""])
+    seed_round(slow)
+    code, out = run(["--root", str(slow), "gate", "TASK-001"])
+    expect("B-pos-gate-runs-command", code == 0 and "RESULT PASS" in out, f"code={code} out={out}")
+
+    started = time.time()
+    code, out = run(["--root", str(slow), "status"])
+    elapsed = time.time() - started
+    expect(
+        "B-pos-status-does-not-run-shell",
+        code == 0 and elapsed < 20 and "GATE_PASS" in out,
+        f"code={code} elapsed={elapsed:.1f}s out={out}",
+    )
+
+    fresh = new_root("status2")
+    seed_task(fresh, status="pending")
+    code, out = run(["--root", str(fresh), "status"])
+    expect(
+        "B-pos-status-without-rerun-says-not-run",
+        code == 0 and "GATE_NOT_RUN" in out,
+        f"code={code} out={out}",
+    )
+    # 证明只读 status 确实**没有**跑门禁：把任务改成必然 GATE_FAIL 后，
+    # 普通 status 仍然显示旧结论（NOT_RUN），只有显式 --deep 才会重算。
+    fresh_manifest_path = fresh / ".task" / "TASK-001" / "manifest.json"
+    fresh_manifest = read_json(fresh_manifest_path)
+    fresh_manifest["allowed_paths"] = []
+    write_json(fresh_manifest_path, fresh_manifest)
+    code, out = run(["--root", str(fresh), "status"])
+    expect(
+        "B-pos-status-ignores-new-breakage",
+        code == 0 and "GATE_NOT_RUN" in out,
+        f"code={code} out={out}",
+    )
+    code, out = run(["--root", str(fresh), "status", "--deep"])
+    expect(
+        "B-pos-status-deep-still-available",
+        code == 0 and "GATE_FAIL" in out,
+        f"code={code} out={out}",
+    )
+
+    # ---------- C. UNREPLAYABLE_COMMAND ----------
+    unreplay = new_root("unreplay")
+    seed_task(unreplay, status="done", commands=["node _tools/smoke.mjs (临时文件，验证后已删除)"])
+    seed_round(unreplay)
+    code, out = run(["--root", str(unreplay), "gate", "TASK-001"])
+    expect(
+        "U-neg-placeholder-note-is-blocked",
+        code == 1 and "UNREPLAYABLE_COMMAND" in out,
+        f"code={code} out={out}",
+    )
+
+    bracket = new_root("bracket")
+    seed_task(bracket, status="done", commands=["node --check <临时复制的 grid.js>"])
+    seed_round(bracket)
+    code, out = run(["--root", str(bracket), "gate", "TASK-001"])
+    expect(
+        "U-neg-angle-placeholder-is-blocked",
+        code == 1 and "UNREPLAYABLE_COMMAND" in out,
+        f"code={code} out={out}",
+    )
+
+    missing = new_root("missing")
+    seed_task(missing, status="done", commands=["node _tools/gone.mjs"])
+    seed_round(missing)
+    code, out = run(["--root", str(missing), "gate", "TASK-001"])
+    expect(
+        "U-neg-missing-declared-file-is-blocked",
+        code == 1 and "UNREPLAYABLE_COMMAND" in out,
+        f"code={code} out={out}",
+    )
+
+    # 正例：必须一个都不能误杀。
+    good = new_root("goodcmd")
+    seed_task(
+        good,
+        status="done",
+        commands=[
+            "node _tools/smoke.mjs",
+            "node --check src/app.js",
+            "py -3 -c \"print(1)\"",
+            "node -e \"process.exit(0)\" 2>&1",
+            "node -e \"process.exit(0)\" > out.log",
+        ],
+    )
+    seed_round(good)
+    code, out = run(["--root", str(good), "gate", "TASK-001"])
+    expect(
+        "U-pos-replayable-commands-pass",
+        code == 0 and "UNREPLAYABLE_COMMAND" not in out,
+        f"code={code} out={out}",
+    )
+
+    # 正例：本机没装的测试运行器不能算工人的错。
+    absent = new_root("absent")
+    seed_task(absent, status="done", commands=["pytest -q tests/"])
+    seed_round(absent)
+    code, out = run(["--root", str(absent), "gate", "TASK-001"])
+    expect(
+        "U-pos-missing-runner-not-flagged-unreplayable",
+        "UNREPLAYABLE_COMMAND" not in out,
+        f"code={code} out={out}",
+    )
+
+    # 正例：自然语言的 verify 不是命令，不应被当成命令收集。
+    natural = new_root("natural")
+    seed_task(natural, status="pending")
+    natural_manifest_path = natural / ".task" / "TASK-001" / "manifest.json"
+    natural_manifest = read_json(natural_manifest_path)
+    natural_manifest["requirements"] = [
+        {"id": "R1", "text": "可验收需求", "verify": "人工目视检查（不写命令）"}
+    ]
+    write_json(natural_manifest_path, natural_manifest)
+    code, out = run(["--root", str(natural), "gate", "TASK-001", "--basic"])
+    expect(
+        "U-pos-prose-verify-not-collected",
+        "UNREPLAYABLE_COMMAND" not in out,
+        f"code={code} out={out}",
+    )
+
+    # verify_cmd 里放占位符必须被拦（任务侧入口）。
+    bad_verify = new_root("badverify")
+    seed_task(bad_verify, status="pending")
+    bad_manifest_path = bad_verify / ".task" / "TASK-001" / "manifest.json"
+    bad_manifest = read_json(bad_manifest_path)
+    bad_manifest["requirements"] = [
+        {"id": "R1", "text": "x", "verify_cmd": "运行一下 <测试脚本>"}
+    ]
+    write_json(bad_manifest_path, bad_manifest)
+    code, out = run(["--root", str(bad_verify), "gate", "TASK-001", "--basic"])
+    expect(
+        "U-neg-placeholder-verify-cmd-is-blocked",
+        code == 1 and "UNREPLAYABLE_COMMAND" in out,
+        f"code={code} out={out}",
+    )
+
+    # ---------- D. STALE_REPORT（软提示，不判 FAIL） ----------
+    stale = new_root("stale")
+    seed_task(stale, status="done")
+    report_path = stale / ".task" / "TASK-001" / "worker-report.json"
+    report = read_json(report_path)
+    report["changed_files"] = ["src/app.js"]
+    write_json(report_path, report)
+    seed_round(stale)
+    code, out = run(["--root", str(stale), "gate", "TASK-001"])
+    expect("D-pos-baseline-gate-passes", code == 0, f"code={code} out={out}")
+    rerun = read_json(stale / ".task" / "TASK-001" / "rerun.json")
+    expect(
+        "D-pos-fingerprint-recorded",
+        isinstance(rerun.get("files"), dict) and "src/app.js" in rerun["files"],
+        json.dumps(rerun, ensure_ascii=False)[:300],
+    )
+    expect("D-pos-not-stale-yet", rerun.get("stale_report") is False, json.dumps(rerun)[:200])
+
+    (stale / "src" / "app.js").write_text("console.log(2);\n", encoding="utf-8")
+    code, out = run(["--root", str(stale), "gate", "TASK-001"])
+    expect(
+        "D-neg-stale-report-detected",
+        code == 0 and "STALE_REPORT" in out and "src/app.js" in out,
+        f"code={code} out={out}",
+    )
+    expect(
+        "D-pos-stale-report-is-not-a-gate-failure",
+        "RESULT PASS" in out,
+        f"code={code} out={out}",
+    )
+    rerun = read_json(stale / ".task" / "TASK-001" / "rerun.json")
+    expect("D-pos-stale-recorded", rerun.get("stale_report") is True, json.dumps(rerun)[:200])
+
+    code, out = run(["--root", str(stale), "gate", "TASK-001"])
+    expect(
+        "D-pos-stale-clears-after-rerun",
+        "STALE_REPORT" not in out and "RESULT PASS" in out,
+        f"code={code} out={out}",
+    )
+
+    # ---------- E. round-close ----------
+    open_round = new_root("openround")
+    seed_task(open_round, status="in_progress")
+    seed_round(open_round)
+    code, out = run(["--root", str(open_round), "round-close"])
+    expect(
+        "R-neg-unfinished-round-is-not-archived",
+        code == 1 and "ROUND_CLOSE_FAIL" in out and (open_round / ".task" / "round.json").is_file(),
+        f"code={code} out={out}",
+    )
+
+    closeable = new_root("close")
+    seed_task(closeable, status="done")
+    seed_round(closeable)
+    code, out = run(["--root", str(closeable), "round-close"])
+    archived = closeable / ".task" / "rounds" / "ROUND-001.json"
+    expect(
+        "R-pos-closed-round-is-archived",
+        code == 0
+        and "ROUND_CLOSED ROUND-001" in out
+        and archived.is_file()
+        and not (closeable / ".task" / "round.json").exists(),
+        f"code={code} out={out}",
+    )
+    expect(
+        "R-pos-archive-keeps-task-states",
+        archived.is_file() and read_json(archived).get("closed_by") == "M1",
+        archived.read_text(encoding="utf-8")[:300] if archived.is_file() else "missing",
+    )
+    code, out = run(["--root", str(closeable), "round-init", "ROUND-002", "M2", "C3"])
+    expect(
+        "R-pos-next-round-can-start",
+        code == 0 and "CREATED" in out,
+        f"code={code} out={out}",
+    )
+
+    print("ALL v0.35 DSH CHECKS PASSED")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

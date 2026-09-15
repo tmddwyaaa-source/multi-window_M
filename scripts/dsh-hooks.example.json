@@ -1,6 +1,6 @@
 {
   "_readme": [
-    "dsh hooks for the multi-window-m-034 skill (方案 B: dsh as a first-class host).",
+    "dsh hooks for the multi-window-m-035 skill (方案 B: dsh as a first-class host).",
     "",
     "Mount the Claude Code bridge, NOT the Codex bridge: only this dialect exposes",
     "SubagentStop, which is the 'a delegated window ended' signal this skill needs.",
@@ -33,7 +33,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "py -3 \"C:\\Users\\user\\.dsh\\skills\\multi-window-m-034\\scripts\\dsh-hook-bridge.py\""
+            "command": "py -3 \"C:\\Users\\user\\.dsh\\skills\\multi-window-m-035\\scripts\\dsh-hook-bridge.py\""
           }
         ]
       }
@@ -44,7 +44,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "py -3 \"C:\\Users\\user\\.dsh\\skills\\multi-window-m-034\\scripts\\dsh-hook-bridge.py\""
+            "command": "py -3 \"C:\\Users\\user\\.dsh\\skills\\multi-window-m-035\\scripts\\dsh-hook-bridge.py\""
           }
         ]
       }

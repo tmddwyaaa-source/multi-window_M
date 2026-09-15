@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""dsh hooks bridge for the multi-window-m-034 skill.
+"""dsh hooks bridge for the multi-window-m-035 skill.
 
 DeepSeek Harness has no hook dialect of its own. It ships two bridges that run
 *other* tools' `hooks.json` command hooks during agent runs, and the Claude Code

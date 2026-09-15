@@ -2,6 +2,44 @@
 
 当前规则以 `SKILL.md` 的 `version` 字段为准。本文件只作历史说明，**不得当作当前规则引用**。
 
+## 0.35-dsh — schema 契约、只读 status、关轮、不可重放命令（2026-09）
+
+依据 `skill测试报告.md`（D:\8xgg\project 三轮真实交付，19 个任务）与 Codex 的《给 DSH：0.34 实测后的兼容性决策与实施顺序》。**0.34 目录保持不动**，本版是新建隔离副本。
+
+### 解决的实际问题
+
+| 问题 | 出处 | 处理 |
+|---|---|---|
+| `status` 会逐任务重跑 Gate（含 ~90s 回归命令），多任务时被 harness 120s 掐断 | 报告 §4.8 | **`status` 改为只读**：不执行任何 shell 命令，只显示上次真跑的记录（`GATE_PASS`/`GATE_FAIL`/`GATE_NOT_RUN`/`GATE_STALE`）。需要重算用显式 `--deep`。收口仍由 `gate --full` / `audit-round` 负责 |
+| 没有关轮命令，第二轮开不了，只能手工删 `round.json` | 报告 §2.3 | **新增 `round-close`**：仅当整轮任务全部 `done` 且审计通过，才把 `round.json` **原子归档**到 `.task/rounds/`；未完成任务一律拒绝；绝不自动触发 |
+| `tests[].command` 写占位符 / 说明文字 / 已删文件，Full Gate 逐字重放 → 永久 FAIL | 报告 §2.9、§4.3、§4.7、§4.15（**同一根因出现 3 次**） | **新增 `UNREPLAYABLE_COMMAND` 预检**：占位符、全角/中文说明、无运行器前缀、引用已声明却缺失的文件 → 收口前直接报明码并指出条目。**它是验收证据错误，不推进卡点计数** |
+| verify-report 会在文件被改后继续被当证据用 | 报告 §2.22 | **新增 `STALE_REPORT`**：报告自称的 `changed_files` 之后又被改过 → 打**软提示**（不判 FAIL、不进卡点）。判据用**内容指纹**，不用 mtime |
+| 两个宿主可能用各自旧的理解改写对方新写的数据 | Codex 决策 | **新增 `.task/` `schema_version`**：读到更高版本 → `UNSUPPORTED_SCHEMA`，**fail closed**：只允许查看，禁止改状态与收口；缺失/更低 → 走迁移兼容路径 |
+| 文档暗示 `reassign --window` | 报告 §2.2 | **保留准确的 `--owner`**（Codex 决定：`window` 会混淆 worker 与 verifier）。`assign-verifier --window` 专指 verifier，两者不混用。修正文档与模板 |
+
+### 新增/变更的子命令与字段
+
+- 新子命令：`round-close`。`status` 新增 `--deep`。
+- 新诊断码：`UNSUPPORTED_SCHEMA`、`UNREPLAYABLE_COMMAND`、`STALE_REPORT`。
+- 新字段：`.task/*/manifest.json` 与 `.task/round.json` 顶层 `schema_version`；`rerun.json` 新增 `files`（内容指纹）与 `stale_report`。
+- `KNOWN_COMMANDS` 补齐原先缺失的 `assign-verifier` / `sync-worker-route` / `packet`（影响 `--root` 位置校验）。
+
+### 纳入的跨宿主共同原则（Codex 确认）
+
+1. `.task/` schema、状态机、`owner`/`verifier`、`block_id`、三次卡点梯级与核心 Gate 是**跨宿主共同核心**。
+2. DSH 的 `packet` / `read_budget` / 锚点诊断 / `dsh-runs.jsonl` / 宿主参数是**附加层**，不得改变共同字段含义或收口结论。
+3. 新字段必须 optional 且有旧行为默认值。
+4. Hook 只是账本和触发器：不改状态、不派工、不标 done。
+5. **一任务只能有一个 `owner`**；多人协作拆子任务。
+6. **M1 代验不算独立验收**：verifier 窗口缺席时任务保持未完成；只有派工前明确调整风险策略才可不要求 verifier。
+7. 旧 manifest 缺 `block_attempts` 时回落任务级 `attempt`，标注 `LEGACY_UNSCOPED`，保守兼容**保留**。
+
+### 测试
+
+- 本分支 `selftest` 全绿：**15 套**（新增 `test_dsh_035.py`，32 项断言，覆盖每个改动的正例与负例）。
+- Codex 版 `test_retry_ladder.py` 在本分支上**原样通过（5/5）** —— 状态机计数语义未被本轮改动触及。
+- 关键正例（防误杀）：`node _tools/smoke.mjs`、`node --check src/app.js`、`py -3 -c "print(1)"`、`2>&1` / `> out.log` 重定向、**本机未安装的 `pytest`** 一律**不**报 `UNREPLAYABLE_COMMAND`。
+
 ## 0.34-dsh — DSH 分支起点（与 Codex 版合并后的 DSH 版）
 
 本分支（`dsh-version`）以 Codex 版 0.34 为基线，合并 DSH 宿主专属能力，并**统一两支的命名**，使 `test_retry_ladder.py`（Codex 版）与本分支的 `test_block_staircase.py` **同时通过**。

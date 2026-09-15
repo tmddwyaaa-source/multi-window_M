@@ -48,7 +48,7 @@ def main() -> int:
         module.WINDOW_RE.pattern == r"^(?:M[1-9]|M10|C[1-9][0-9]*)$",
         module.WINDOW_RE.pattern,
     )
-    expect("W-src-version-034", module.SKILL_VERSION == "0.34", module.SKILL_VERSION)
+    expect("W-src-version-035", module.SKILL_VERSION == "0.35", module.SKILL_VERSION)
 
     for value in ("M1", "M10", "C1", "C4", "C99"):
         expect(f"W-pos-valid-{value}", module.valid_window(value) is True, value)
@@ -67,7 +67,7 @@ def main() -> int:
         expect(f"W-doc-templates-no-{token}", token not in templates, token)
     expect(
         "W-doc-templates-ordinary-filename",
-        "batch-02.json" in templates and "/multi-window-m-034" in templates,
+        "batch-02.json" in templates and "/multi-window-m-035" in templates,
         templates[:200],
     )
     # The invocation token must be byte-identical to the frontmatter name and to
@@ -77,7 +77,7 @@ def main() -> int:
         (line for line in skill.splitlines() if line.startswith("name:")), ""
     )
     declared = name_line.split(":", 1)[1].strip() if ":" in name_line else ""
-    expect("W-doc-name-is-kebab", declared == "multi-window-m-034", declared)
+    expect("W-doc-name-is-kebab", declared == "multi-window-m-035", declared)
     # 宿主按文件夹发现技能、按 `name` 调用：**安装到宿主技能目录时两者必须一致**。
     # 发布仓库的根目录叫 multi-window_M（带下划线/大写，不是 kebab），不可能相等，
     # 所以这里在仓库里降级为提示；可用 MULTI_WINDOW_ACCEPT_DIR 显式声明允许的目录名。
