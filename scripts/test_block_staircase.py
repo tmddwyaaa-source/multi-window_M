@@ -133,7 +133,12 @@ def main() -> int:
     manifest = manifest_of(root)
     expect(
         "K-pos-third-failure-hits-cap",
-        code == 0 and manifest["block_attempts"]["attempts"] == 3 and "硬停" in out,
+        # 0.36：与 cmd_reopen 统一口径 —— 到上限时给出 HARD_STOP token 并非 0 退出，
+        # 让调用方/脚本能可靠识别"已硬停"，而不是只看到一句中文提示。
+        code != 0
+        and manifest["block_attempts"]["attempts"] == 3
+        and "硬停" in out
+        and "HARD_STOP" in out,
         f"code={code} out={out} block={manifest.get('block_attempts')}",
     )
 
@@ -230,13 +235,34 @@ def main() -> int:
         code != 0 and "REASSIGN_FAIL" in out and "expected_windows" in out,
         f"code={code} out={out}",
     )
+    # 方向文件 §6.1：同负责人**可以确认已有交接**（幂等），但不新增记录、不增加失败次数。
+    failures_before = manifest_of(root)["block_attempts"]["attempts"]
+    history_before = len(manifest_of(root).get("assignment_history") or [])
     code, out = run(
-        ["--root", str(root), "reassign", "TASK-001", "--owner", "C1", "--reason", "同一个人不算换"]
+        ["--root", str(root), "reassign", "TASK-001", "--owner", "C1", "--reason", "确认已有交接"]
+    )
+    manifest = manifest_of(root)
+    expect(
+        "K-pos-reassign-same-owner-confirms-existing-handoff",
+        code == 0
+        and "HANDOFF_CONFIRMED" in out
+        and manifest["owner"] == "C1"
+        and manifest["block_attempts"]["attempts"] == failures_before
+        and len(manifest.get("assignment_history") or []) == history_before,
+        f"code={code} out={out} failures={manifest['block_attempts']['attempts']}",
+    )
+
+    # 但"当前负责人从未接手过"（无任何交接历史）时不能拿同 owner 当确认。
+    bogus_root = Path(tempfile.mkdtemp(prefix="m036-bogus-"))
+    seed(bogus_root)
+    current_owner = str(manifest_of(bogus_root).get("owner") or "")
+    code, out = run(
+        ["--root", str(bogus_root), "reassign", "TASK-001", "--owner", current_owner, "--reason", "假装确认"]
     )
     expect(
-        "K-neg-reassign-same-owner-rejected",
-        code != 0 and "must differ from current owner" in out,
-        f"code={code} out={out}",
+        "K-neg-reassign-same-owner-without-history-rejected",
+        code != 0 and "无法当作确认" in out,
+        f"code={code} out={out} owner={current_owner}",
     )
 
     tasks_before = json.loads((root / ".task" / "round.json").read_text(encoding="utf-8"))["tasks"]

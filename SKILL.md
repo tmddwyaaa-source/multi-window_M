@@ -1,5 +1,5 @@
 ---
-name: multi-window-m-035
+name: multi-window-m-036
 description: >-
   多窗口分工：常驻仅 M1～M10；短期任务用临时窗 C1、C2（一轮最多 4 个）。
   窗号规则见正文「窗口身份」；不要发明第三套编号。
@@ -9,13 +9,13 @@ description: >-
   规则只描述当前行为；门禁细节见 references/task-gate.md，宿主接线见 references/hooks.md。
   斥候→主力→搜剿；同一卡点最多 3 次（第 2 次换负责人，第 3 次硬停）。
   在用户提到多窗口、M1、C1、查收、模块注册表、斥候/主力/搜剿时使用。
-version: "0.35"
+version: "0.36"
 disable-model-invocation: true
 ---
 
-# Multi-Window_M-0.35（常驻 M1～M10，临时 Cn）
+# Multi-Window_M-0.36（常驻 M1～M10，临时 Cn）
 
-本文件夹名带版本号，是升级系列的隔离副本；`version` 字段也是 0.35。调用：`/multi-window-m-035`——宿主把 `/调用名` 与 `name` 字段逐字符比对（且只接受小写字母、数字、连字符），所以这里不带下划线也不带点。历史版本说明见 [CHANGELOG.md](CHANGELOG.md)，不得当作当前规则。
+本文件夹名带版本号，是升级系列的隔离副本；`version` 字段也是 0.36。调用：`/multi-window-m-036`——宿主把 `/调用名` 与 `name` 字段逐字符比对（且只接受小写字母、数字、连字符），所以这里不带下划线也不带点。历史版本说明见 [CHANGELOG.md](CHANGELOG.md)，不得当作当前规则。
 
 复制即用话术见 [templates.md](templates.md)。G0～G3、manifest schema、`transition` 表见 [references/task-gate.md](references/task-gate.md)。宿主接线（Cursor / Codex / Zcode / dsh）只允许写在 [references/hooks.md](references/hooks.md)；dsh 的装/验/撤步骤见 [references/dsh-evidence.md](references/dsh-evidence.md)。
 
@@ -164,7 +164,7 @@ disable-model-invocation: true
 - 一键自检（不依赖写死的本机路径）：`py -3 scripts/taskctl.py selftest`。
 - **派工简报：** `py -3 scripts/taskctl.py --root <项目根> brief TASK-xxx --role worker|scout|verifier`。M1 把终端输出原文贴给该窗或子代理，不要手写转述代替生成物。
 - **接班简报：** `py -3 scripts/taskctl.py --root <项目根> handoff`。新 M1 先跑这一条再动手。不存在的 task 或非法 `--role` 会被拒绝。
-- **状态视图：** `py -3 scripts/taskctl.py --root <项目根> status --markdown --write`。写入 `docs/TASK-STATUS.md`。禁止手改该文件；不要在 Registry / RECEIPT-LOG 里另写一套 pending/done 当权威。`status` 是**只读视图**：它**不执行任何 shell 命令**，只显示上次真跑 Gate 的记录（`GATE_PASS` / `GATE_FAIL` / `GATE_NOT_RUN` / `GATE_STALE`）。它**不是**收口依据。要真跑就显式跑 `gate --full` 或 `audit-round`；确实需要在一个命令里逐任务重算时才加 `--deep`（会执行回归命令，可能几分钟）。
+- **状态视图：** `py -3 scripts/taskctl.py --root <项目根> status --markdown --write`。写入 `docs/TASK-STATUS.md`。禁止手改该文件；不要在 Registry / RECEIPT-LOG 里另写一套 pending/done 当权威。`status` 是**只读视图**：它**不执行任何 shell 命令**，只显示上次真跑 Gate 的记录（`GATE_PASS` / `GATE_FAIL` / `GATE_NOT_RUN` / `GATE_STALE`）。它**不是**收口依据。要真跑就显式跑 `gate <TASK-ID>`（默认即完整验收，**没有 `--full` 这个参数**）或 `audit-round`；确实需要在一个命令里逐任务重算时才加 `--deep`（会执行回归命令，可能几分钟）。`--basic` 是基础验收（只核工人材料，不重跑命令）。
 - **关轮：** `py -3 scripts/taskctl.py --root <项目根> round-close`。只有**整轮任务全部 `done` 且审计通过**才归档 `round.json` 到 `.task/rounds/`；未完成任务一律拒绝。绝不自动触发，**禁止手工删除 `round.json` 开新轮**。归档后正常跑 `round-init` 开下一轮。
 - **需求覆盖：** 用户每条新需求写入 `source_refs`（或 round 的 `source_requirements`）并映射到带 `verify`/`verify_cmd` 的 R 项。缺映射 → `REQUIREMENT_COVERAGE_FAIL`，停止收口。禁止只改聊天话术。
 - **挡位：** `round.json` 的 `gears` 记录能力挡与协作挡。未写 = 默认 + P。未确认的 bonus / A → `GEAR_VIOLATION`。
@@ -199,9 +199,9 @@ disable-model-invocation: true
 4. 旧宿主的 `transition` 会写回 manifest，而它不更新任何新字段：**它用的是旧规则，却留下了"看起来正常"的状态。**
 5. 最坏情况：**同一份 `.task/` 下，新旧两个宿主对"该不该换人 / 该不该硬停"给出不同结论，而没有任何一方报错。**
 
-结论：**0.35 项目不得回退用旧宿主操作。** 这不是保守建议，是上面五条的实际后果。
+结论：**0.36 项目不得回退用旧宿主操作。** 这不是保守建议，是上面五条的实际后果。
 
-### 不可重放命令与过期报告（0.35 收口检查）
+### 不可重放命令与过期报告（0.36 收口检查）
 
 - **`UNREPLAYABLE_COMMAND`：** `tests[].command` / `verify_cmd` 若是**占位符**（`<临时脚本>`）、**带说明文字**（`node a.mjs (临时文件，已删除)`）、**中文全角标点**、**没有可识别运行器前缀**，或**引用了已声明却缺失的文件**，收口直接失败并指出条目。它是**验收证据错误**：不推进卡点计数、不算一次失败。纪律：临时探针写在 `note` 里，`tests[]` 只放**可执行且可重放**的命令。
   边界：**本机没装的运行器不算**（例如本机无 `pytest` 时 `pytest -q` 仍可重放），不做二进制存在性判定。
@@ -219,7 +219,7 @@ Hook **三不**：不改状态、不派工、不标 done。失败只记账。即
 
 宿主差异（事件名、适配器、能力确认测试命令）只写在 `references/hooks.md`。本文件与 `taskctl.py` 不按宿主名分支行为。
 
-## 派工用「就绪包」（DSH 方向，0.35）
+## 派工用「就绪包」（DSH 方向，0.36）
 
 用户只说一句「你是 Mn，请完成指示任务」，所以**窗口要读的东西必须自己就绪、且足够短**。M1 派工时用：
 
@@ -285,7 +285,7 @@ py -3 scripts/taskctl.py --root <项目根> packet TASK-001 --role worker --chec
 
 **亲自微修订**：未经点名且未经同意，禁止改子模块实现。未获同意则派 M 或 C，本窗只交 Registry 与开工话术。
 
-## 一任务两职责：worker 与 verifier（0.35）
+## 一任务两职责：worker 与 verifier（0.36）
 
 一个任务可以同时有**一个实现负责人**和**一个独立验收人**，两者必须可区分、可审计、不可互相冒充。M1 仍是唯一收口者。
 
@@ -325,7 +325,7 @@ py -3 scripts/taskctl.py --root <项目根> receipt C2 --role verifier
 
 **一个任务只能有一个 `owner`（主改工人）。** 需要多人协作时**拆成子任务**，或使用只读辅助 / 斥候；**禁止两个工人同时主改同一任务**。同文件并发会真的写坏产物，这是实测发生过的。
 
-**M1 代验（0.35 明确）**：独立验收窗没开时，M1 **可以**额外复跑命令、写补充证据，但**不能冒充缺席的 verifier**，也**不能**把 `independent_verification` 悄悄改成不需要。这种情况下任务**保持未完成**。唯一的合法出口是：**在派工前**就按风险策略明确"本任务不要求独立验收"（`risk=low` 且 `attempt<2` 且未设 `verification_required`），此时走的是短路径，而不是"事后代签"。
+**M1 代验（0.36 明确）**：独立验收窗没开时，M1 **可以**额外复跑命令、写补充证据，但**不能冒充缺席的 verifier**，也**不能**把 `independent_verification` 悄悄改成不需要。这种情况下任务**保持未完成**。唯一的合法出口是：**在派工前**就按风险策略明确"本任务不要求独立验收"（`risk=low` 且 `attempt<2` 且未设 `verification_required`），此时走的是短路径，而不是"事后代签"。
 
 门禁 token：`VERIFIER_ASSIGNMENT_MISSING`（没派 verifier）、`VERIFIER_ASSIGNMENT_CONFLICT`（verifier 非本轮窗 / 等于 owner 或 worker / reviewer 冒名）、`WORKER_ASSIGNMENT_CONFLICT`（`round.tasks` 的 worker ≠ `manifest.owner`）。
 
@@ -368,7 +368,7 @@ Token 放大的大头**不是门禁**（实测账本/hook 事件 < 0.1%），而
 
 **注意（防矫枉过正）**：信息未知时跳过斥候会更贵——主力的探索是"读+写"混合的，过程留在主线被反复重发，还可能已经改错文件。斥候的成本是**一次**，主力乱翻的成本是**每次重发都在付**。
 
-## 工具纪律（0.35 新增，实测踩坑；**进文档不进状态机**）
+## 工具纪律（0.36 新增，实测踩坑；**进文档不进状态机**）
 
 以下四条来自三轮真实交付的复盘，都属于"证据会被工具链骗"的类型，因此**写成纪律，不写成门禁**：
 

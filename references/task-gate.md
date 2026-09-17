@@ -90,7 +90,7 @@ py -3 scripts/taskctl.py --root <项目根> status --markdown --write
 
 ## manifest.json
 
-顶层 `schema_version`（0.35 新增，共同文件契约版本）与 `skill_version` **不是一回事**。新建任务由 `taskctl.py init` 写入当前值；旧文件缺失视为旧 schema，走迁移兼容路径。
+顶层 `schema_version`（0.36 新增，共同文件契约版本）与 `skill_version` **不是一回事**。新建任务由 `taskctl.py init` 写入当前值；旧文件缺失视为旧 schema，走迁移兼容路径。
 
 最小字段：`schema_version`、`task_id`、`owner`、`track`、`risk`、`allowed_paths`、`source_refs`、`requirements`、`attempt`。每个 requirement 至少包含 `id`、`text`、`verify`。可跑的验收命令写在 `verify_cmd`，或把 `verify` 写成可直接执行的命令。
 
@@ -162,7 +162,7 @@ py -3 scripts/taskctl.py --root <项目根> attempt TASK-001 --block-id B2 --new
 `round.json` 可选：
 
 - `tasks`：**实现路由**。`{"C1": ["TASK-001"]}` —— 该任务的 worker 窗必须等于 `manifest.owner`，否则 `WORKER_ASSIGNMENT_CONFLICT`。
-- `verifier_assignments`：**验收路由**（0.35）。`{"TASK-001": "C2"}`。需要独立验收的任务必须有；verifier 必须在 `expected_windows` 内且不同于 owner/worker；短路径任务不得有。`assign-verifier` 只改这里，不改 `owner` / `attempt` / `block_id` / `assignment_history`。
+- `verifier_assignments`：**验收路由**（0.36）。`{"TASK-001": "C2"}`。需要独立验收的任务必须有；verifier 必须在 `expected_windows` 内且不同于 owner/worker；短路径任务不得有。`assign-verifier` 只改这里，不改 `owner` / `attempt` / `block_id` / `assignment_history`。
 - `receipts_by_role`：由 `receipt --role` 写入，`{"C2": "verifier"}`，让状态表能把 C2 显示为 verifier 而不是"又一个 worker"。
 - `gears`：`capability`=`default|bonus`，`collaboration`=`P|A`，`capability_confirmed` 布尔。未写 = 默认 + P。bonus 或 A 必须 `capability_confirmed=true`，否则 `GEAR_VIOLATION`。
 - `hook_supervision`：默认 false。为 true 时，`audit-round` 收口需要宿主 stop 的完整 start/end 对：Cursor / Codex / Zcode 看 `hook-runs.jsonl` 里来自 `cursor-stop` / `codex-stop` / `zcode-stop` 的对；dsh 看 `dsh-runs.jsonl` 里来自 `dsh-stop` / `dsh-subagent-end` 的对（接线见 [hooks.md](hooks.md)、[dsh-evidence.md](dsh-evidence.md)）。`--source manual` 不算。缺证据 → `HOOK_EVIDENCE_MISSING`。宿主没有 hook 能力时才不要打开此开关。
@@ -198,11 +198,11 @@ py -3 scripts/taskctl.py transition TASK-001 verified --actor verifier
 
 `brief` / `handoff` / `status --markdown` 默认不改 `.task/` 状态。`--write` 只覆盖 `docs/TASK-STATUS.md`。无 `.task/` 时 `--markdown` → `STATUS_FAIL: no .task`。`--role` 仅 `worker|scout|verifier`。缺失 task 或非法 role → `BRIEF_FAIL`。无 `.task/` 跑 `handoff` → `HANDOFF_FAIL`。
 
-**`status` 是只读视图（0.35）**：它**不执行任何 shell 命令**，只从 `.task/<task>/rerun.json` 读上次真跑的结论。可能显示 `GATE_PASS` / `GATE_FAIL` / `GATE_NOT_RUN`（还没跑过）/ `GATE_STALE`（报告已过期）。它**不是**收口依据。要真跑：`gate TASK-xxx --full`、`audit-round`，或显式 `status --deep`（会逐任务执行回归命令，可能几分钟）。
+**`status` 是只读视图（0.36）**：它**不执行任何 shell 命令**，只从 `.task/<task>/rerun.json` 读上次真跑的结论。可能显示 `GATE_PASS` / `GATE_FAIL` / `GATE_NOT_RUN`（还没跑过）/ `GATE_STALE`（报告已过期）。它**不是**收口依据。要真跑：`gate TASK-xxx --full`、`audit-round`，或显式 `status --deep`（会逐任务执行回归命令，可能几分钟）。
 
-**`round-close`（0.35）**：仅当整轮任务全部 `done` **且** `audit-round` 通过，才把 `.task/round.json` 归档到 `.task/rounds/<round_id>.json` 并移除原位文件；未完成任务或审计未过一律 `ROUND_CLOSE_FAIL`，原位文件保持不动。归档成功后再跑 `round-init` 开下一轮。**禁止手工删除 `round.json`。**
+**`round-close`（0.36）**：仅当整轮任务全部 `done` **且** `audit-round` 通过，才把 `.task/round.json` 归档到 `.task/rounds/<round_id>.json` 并移除原位文件；未完成任务或审计未过一律 `ROUND_CLOSE_FAIL`，原位文件保持不动。归档成功后再跑 `round-init` 开下一轮。**禁止手工删除 `round.json`。**
 
-## `.task/` schema 版本与 fail closed（0.35）
+## `.task/` schema 版本与 fail closed（0.36）
 
 `manifest.json` 与 `round.json` 有顶层 `schema_version`（当前 `1`）。它与 `skill_version` **分开**：技能升版不一定动 schema。
 
@@ -216,15 +216,33 @@ fail closed 覆盖所有写子命令（`init` / `round-init` / `round-close` / `
 
 **反方向：`SCHEMA_REGRESSION_RISK`** —— `UNSUPPORTED_SCHEMA` 防"未来版写的数据被现在这版乱改"，但防不住"现在这版写的数据被**更旧的宿主**乱改"：旧宿主不认识 `schema_version`，既不会维护它也不报错。判据（机械可查）：`.task/skill-lock.json` 已声明契约版本 N，而**活动轮或某个任务目录**的 `schema_version` < N → 拒写，只读命令仍可用。真正的历史项目（锁里也无版本声明，N=0）继续兼容。契约只在写了新文件后升级（`init` / `round-init` / `migrate-project`），**读取路径绝不自动补写**。
 
-## 收口检查：不可重放命令与过期报告（0.35）
+## 收口检查（0.36）
 
-- **`UNREPLAYABLE_COMMAND`** —— Full Gate 会先对 `tests[].command` 与 `requirements[].verify_cmd` 做**形态**预检，然后才逐字重放。命中的形状：`<占位符>`（但不是 `2>&1` / `> out.txt` 这类合法重定向）、`**` / ` ``` ` / `…`、中文或全角说明文字、没有可识别运行器前缀、引用了像文件却不存在且属本任务范围（`_tools/` 或带扩展名的相对路径）的路径。
+- **`UNREPLAYABLE_COMMAND`** —— Full Gate 对 `tests[].command` 与 `requirements[].verify_cmd` 做**形态**预检，然后逐字重放。命中的形状：`<占位符>`（但不是 `2>&1` / `> out.txt` 这类合法重定向）、`**` / ` ``` ` / `…`、中文或全角说明文字、没有可识别运行器前缀。
   它是**验收证据错误**：阻断收口，**不推进卡点计数**、不算一次失败。
-  **边界**：不做二进制存在性判定——本机没装 `pytest` 时 `pytest -q tests/` 仍然算可重放。临时探针请写进报告的 `note`，`tests[]` 只放可执行且可重放的命令。
-- **`STALE_REPORT`** —— 报告自称的 `changed_files` 在报告之后又被改过 → 报明码。判据是 `rerun.json` 里记录的**文件内容指纹**（SHA256 前 16 位），**不用 mtime**：文件系统时间戳粒度可能只有秒级，同秒写入会假阴性。首次 Gate 只建立基线，不报过期。
-  **分层**：日常 `gate`、例行 `audit-round`、hook 触发的审计都只**提示**（`RESULT PASS` 不变、不进卡点）；**只有 `round-close` 归档时阻断**。它只**提示**报告可能旧了，**不能**声称已保证验收新鲜——指纹基线是"上次 Gate 时的工作区内容"，门禁无法知道报告是谁写的、什么时候写的。
+  **边界**：不做二进制存在性判定——本机没装 `pytest` 时 `pytest -q tests/` 仍算可重放。临时探针写进报告的 `note`，`tests[]` 只放可执行且可重放的命令。
+- **必需验收脚本缺失（`MISSING_ACCEPTANCE_SCRIPT`，纯事实检查）** —— 验收脚本是**工人的交付物**，派工那刻本来就不存在。
+  - 派工阶段：**不阻断**；
+  - 交付/收口阶段：**只查存在性**，缺失即失败。**绝不创建、覆盖或删除任何业务/测试文件来制造验收前提**——占位文件会改变被检查对象，而且空脚本可能返回 0（空 `.mjs` / `.py` 都可能退出 0），无法证明原命令可运行。
+  - 判据只认"**本任务范围内**（`_tools/` 或带扩展名的相对路径）**且已声明会交付**（在 `allowed_paths` 内，或已由 `worker-report.changed_files` 申报）"的脚本——不凭命令外形猜测试质量，也不因别的任务的路径而误判本任务。
+  - 命令一律**按原样执行**：不预先创建脚本、不替换命令、不改变被检查对象。正常测试产生的临时输出/缓存按测试自身约定处理，与"补空壳交付物"是两件事。
+- **存在但不充分（已知限制）** —— 文件存在、命令退出 0，**仍不能自动证明需求完成**。只交空脚本（`node empty.mjs`）等价于无断言且退出 0，通用工具**无法**由此判断功能是否实现。这类必须由验收者按**原需求**检查真实行为，**不得把"退出 0"当功能通过**。
+- **`UNKNOWN_FIELD`（结构错误）** —— `tests[]` / `evidence[]` 里出现未知字段（典型：把命令写成 `cmd` 而不是 `command`）→ 报错并指出**文件 + 条目 + 字段名 + 正确写法**（含相似度提示）。**绝不静默跳过**：静默容错 = 证据静默丢失（曾导致 15 条回归命令从未被重放）。合法可选元数据（`note` / `why` / `exit_code` / `expected` 等）不拒。
+- **`ACCEPTANCE_CHANGED`（标准改变）** —— 派工时工具自动在 `.task/<task>/contract.json` 落一份**基线**（需求引用 + `verify_cmd` + `allowed_paths` + `risk`），**不需要 M1 跑任何额外命令**。收口时对比基线，有变化就报此码，并把**原标准**一并给出。
+  **变化不自动等于放宽**：由验收者对照**原需求**说明新标准是否等价或更严，M1 明确接受后才收口；**不得只重跑修改后的命令就算通过**。它**不是第二套任务状态**，也**不宣称防作弊**（放在工人可写位置，工具只做对比）。
+- **`UNDECLARED_CHANGE`（已证实的边界错误）** —— 收口时对**整轮**改动做越界识别：排除流程产物、门禁自有产物、**其他任务的合法改动**与用户既有改动之后，仍无法解释的路径才阻断。修改者身份**不得仅凭窗口映射推定**；归属不确定时**只提示**并交 M1 协调。
+- **`WEAK_ACCEPTANCE`（仅辅助提示）** —— `packet` 生成时对**明显偏弱**的命令形态（只做语法解析、只 grep 源码、只打印版本、疑似恒真）打提示。同时看 manifest 与 `worker-report.tests[]`。**不判 FAIL、不影响收口**；`node --check` 对纯重构任务本就可能足够，是否足够由验收者按需求与回归风险判断。
+- **`STALE_REPORT`（当前不可靠 → 只记录）** —— 报告自称的 `changed_files` 在报告之后又被改过则留痕，判据是 `rerun.json` 的**内容指纹**（不用 mtime）。**0.36 起取消 gate 与 `round-close` 的阻断**：当前实现受"流程自己刚写、尚未提交"的产物影响，会造成稳定假红并诱发错误打回。日志**不得指控工人偷改**，也不触发重试计数。
+- **`DUPLICATE_EVENT`** —— 重复提交同一次失败（同 block + 同负责人 + 同原因）或同一次交接：只确认，**不重复计数、不重复写历史**。
 
-`migrate-project` 覆盖已有 `scripts/taskctl.py` 必须 `--force`，且先备份。报告与 lock 写完后再 `--check`。未 `MIGRATE_READY` 不要开发新功能。`--check` 不要求项目内所有任务 Full Gate PASS，只要求迁入的脚本能跑门禁、Hook 不改状态、负向路径仍被拒绝。
+## 三次失败梯级与负责人交接（0.36）
+
+- 一次**真实失败**只计一次；**换人不增加失败次数**。
+- 第二次失败 → `REASSIGN_REQUIRED`：换一个**真正不同**的合格负责人（`reassign --owner`），并同步 `round.tasks` worker 路由、保留不同的 verifier。
+- 同负责人**可以确认已有交接**（幂等，输出 `HANDOFF_CONFIRMED`），但**不算**满足第二次真换人；从未接手过的窗不能拿同 owner 当确认。
+- 第三次失败 → **硬停保留**：输出 `HARD_STOP` 且退出码非 0，写 `docs/BLOCKERS/`。没有合格人选时写 `NO_ELIGIBLE_REPLACEMENT_WORKER`。
+
+`migrate-project` 覆盖已有 `scripts/taskctl.py` 必须 `--force`，且先备份。顺序是 **备份 → 识别旧格式 → 转换 → 验证 → 提交版本标记**，逐文件报告 `changed/already/skipped/failed`；缺信息**明确报告、不编造**；失败时**不提交 schema 契约**，不会留下"成功标记 + 无法操作"的半迁移状态。报告与 lock 写完后再 `--check`；未 `MIGRATE_READY` 不要开发新功能。
 
 前四条 `transition` 是 **low 且 attempt < 2** 的短路径（M1 查收时本窗重跑 Full Gate 后再 `integrated`）。后两条仅在策略表要求独立验收时使用；medium/high 或 `attempt >= 2` **禁止** `worker_done → integrated`。
 

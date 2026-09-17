@@ -1,4 +1,4 @@
-"""v0.35（DSH 方向 A/B）：就绪包与读取预算。
+"""v0.36（DSH 方向 A/B）：就绪包与读取预算。
 
 方向 A：窗口读一份就绪包即可开工，大件只按行号区间读（少读＝少重发）。
 方向 B：就绪包内置输出预算与"不要复述"纪律（少写＝少重发）。
@@ -239,7 +239,7 @@ def main() -> int:
         out,
     )
 
-    print("ALL v0.35 PACKET CHECKS PASSED")
+    print("ALL v0.36 PACKET CHECKS PASSED")
     print(f"temp: {temp}")
     return 0
 

@@ -1,4 +1,4 @@
-"""v0.35（DSH 方向）：schema 契约、round-close、只读 status、不可重放命令、过期报告。
+"""v0.36（DSH 方向）：schema 契约、round-close、只读 status、不可重放命令、过期报告。
 
 本轮改动都是"把已证明的错误机械暴露"，因此每个检查都必须证明两件事：
   1. 该拦的拦住了（负例）；
@@ -225,7 +225,7 @@ def main() -> int:
     regress = new_root("regress")
     seed_task(regress, status="pending")
     seed_round(regress)
-    write_json(regress / ".task" / "skill-lock.json", {"schema_version": 1, "skill_version": "0.35"})
+    write_json(regress / ".task" / "skill-lock.json", {"schema_version": 1, "skill_version": "0.36"})
     regress_round = regress / ".task" / "round.json"
     regress_data = read_json(regress_round)
     regress_data.pop("schema_version", None)
@@ -247,7 +247,7 @@ def main() -> int:
     regress2 = new_root("regress2")
     seed_task(regress2, status="pending")
     seed_round(regress2)
-    write_json(regress2 / ".task" / "skill-lock.json", {"schema_version": 1, "skill_version": "0.35"})
+    write_json(regress2 / ".task" / "skill-lock.json", {"schema_version": 1, "skill_version": "0.36"})
     regress2_manifest = regress2 / ".task" / "TASK-001" / "manifest.json"
     regress2_data = read_json(regress2_manifest)
     regress2_data.pop("schema_version", None)
@@ -354,13 +354,35 @@ def main() -> int:
         f"code={code} out={out}",
     )
 
+    # 缺失脚本：收口时必须存在。判据是**事实检查**（不做任何创建/覆盖/删除），
+    # 且只认"本任务范围内、且已声明会交付"的脚本。
     missing = new_root("missing")
     seed_task(missing, status="done", commands=["node _tools/gone.mjs"])
+    missing_report = missing / ".task" / "TASK-001" / "worker-report.json"
+    missing_data = read_json(missing_report)
+    missing_data["changed_files"] = ["_tools/gone.mjs"]  # 声明过要交付
+    write_json(missing_report, missing_data)
     seed_round(missing)
     code, out = run(["--root", str(missing), "gate", "TASK-001"])
     expect(
-        "U-neg-missing-declared-file-is-blocked",
-        code == 1 and "UNREPLAYABLE_COMMAND" in out,
+        "U-neg-missing-script-blocks-at-close",
+        code == 1 and "MISSING_ACCEPTANCE_SCRIPT" in out and "gone.mjs" in out,
+        f"code={code} out={out}",
+    )
+    expect(
+        "U-neg-no-placeholder-created",
+        not (missing / "_tools" / "gone.mjs").exists(),
+        str(list((missing / "_tools").iterdir())),
+    )
+    # 派工阶段：计划新建的脚本允许不存在 —— 不能因为"派工时还没有脚本"而卡住派工。
+    dispatch = new_root("dispatch")
+    seed_task(dispatch, status="pending", commands=["node _tools/planned.mjs"])
+    seed_round(dispatch)
+    code, out = run(["--root", str(dispatch), "gate", "TASK-001", "--basic"])
+    expect(
+        "U-pos-dispatch-allows-missing-planned-script",
+        "MISSING_ACCEPTANCE_SCRIPT" not in out
+        and not (dispatch / "_tools" / "planned.mjs").exists(),
         f"code={code} out={out}",
     )
 
@@ -490,14 +512,26 @@ def main() -> int:
     # 门禁那次会把指纹基线刷新到"当时的内容"——这是必要的：门禁不可能知道报告是谁写的、
     # 什么时候写的。所以只要没人再动文件，过期就"自愈"了。真实场景是门禁之后又被改：
     (blocking / "src" / "app.js").write_text("console.log(4);\n", encoding="utf-8")
-    # 但真正收口时必须被拦下
+    # 方向文件 §6.4 / §3「当前不可靠」：当前实现受流程产物影响，
+    # **本轮取消 gate 与 round-close 的阻断**。所以收口必须能过，提示仍要留下。
     code, out = run(["--root", str(blocking), "round-close"])
     expect(
-        "D2-neg-round-close-blocked-by-stale-report",
-        code == 1
-        and "STALE_REPORT" in out
-        and (blocking / ".task" / "round.json").is_file(),
+        "D2-pos-stale-no-longer-blocks-round-close",
+        code == 0 and "ROUND_CLOSED" in out,
         f"code={code} out={out}",
+    )
+    archived = blocking / ".task" / "rounds" / "ROUND-001.json"
+    expect(
+        "D2-pos-close-still-archived",
+        archived.is_file() and not (blocking / ".task" / "round.json").exists(),
+        f"archived={archived.is_file()}",
+    )
+    # 提示仍在 rerun.json 里留痕（可查、但不阻断、不计入失败次数）
+    rerun_blocking = read_json(blocking / ".task" / "TASK-001" / "rerun.json")
+    expect(
+        "D2-pos-stale-still-recorded-for-audit",
+        rerun_blocking.get("stale_report") is True,
+        json.dumps(rerun_blocking, ensure_ascii=False)[:200],
     )
 
     # ---------- E. round-close ----------
@@ -536,7 +570,7 @@ def main() -> int:
         f"code={code} out={out}",
     )
 
-    print("ALL v0.35 DSH CHECKS PASSED")
+    print("ALL v0.36 DSH CHECKS PASSED")
     return 0
 
 

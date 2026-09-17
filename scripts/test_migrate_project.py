@@ -1,4 +1,4 @@
-"""v0.35: migrate-project still backs up, reports, locks; version lock is 0.33."""
+"""v0.36: migrate-project still backs up, reports, locks; version lock is 0.33."""
 from __future__ import annotations
 
 import json
@@ -57,17 +57,21 @@ def main() -> int:
     lock = json.loads((root / ".task" / "skill-lock.json").read_text(encoding="utf-8"))
     expect(
         "M-pos-lock-fields",
-        lock.get("skill_version") == "0.35"
-        and lock.get("taskctl_version") == "0.35"
+        lock.get("skill_version") == "0.36"
+        and lock.get("taskctl_version") == "0.36"
         and bool(lock.get("migrated_at"))
         and lock.get("backup") == ""
-        and lock.get("status") == "copied",
-        json.dumps(lock),
+        # 0.36：迁移顺序改为 备份 → 转换既有文件 → 验证 → 最后才提交版本标记，
+        # 所以结束后状态是 converted，且 schema 契约这时才落。
+        and lock.get("status") == "converted"
+        and lock.get("schema_version") == 1
+        and isinstance(lock.get("conversions"), list),
+        json.dumps(lock, ensure_ascii=False),
     )
     report = (root / "docs" / "MIGRATE-REPORT.md").read_text(encoding="utf-8")
     expect(
         "M-pos-report",
-        "skill_version: 0.35" in report and "MIGRATE_READY" in report,
+        "skill_version: 0.36" in report and "MIGRATE_READY" in report,
         report,
     )
     first_bytes = dest.read_bytes()
@@ -93,7 +97,7 @@ def main() -> int:
         backup.is_file() and backup.read_bytes() == old_bytes and dest.read_bytes() != old_bytes,
         f"backup={backup} lock={lock}",
     )
-    expect("M-pos-force-is-current", b"v0.35" in dest.read_bytes(), dest.read_text(encoding="utf-8")[:80])
+    expect("M-pos-force-is-current", b"v0.36" in dest.read_bytes(), dest.read_text(encoding="utf-8")[:80])
 
     code, out = run(
         ["--root", str(root), "migrate-project", "--destination", "scripts/taskctl.py", "--force"],
@@ -128,11 +132,11 @@ def main() -> int:
     code, out = run(["--root", str(root), "handoff"], cwd=root)
     expect(
         "M-pos-handoff-ready",
-        code == 0 and "skill_version: 0.35" in out and "MIGRATE_CHECK_INCOMPLETE" not in out,
+        code == 0 and "skill_version: 0.36" in out and "MIGRATE_CHECK_INCOMPLETE" not in out,
         out,
     )
 
-    print("ALL v0.35 MIGRATE CHECKS PASSED")
+    print("ALL v0.36 MIGRATE CHECKS PASSED")
     return 0
 
 

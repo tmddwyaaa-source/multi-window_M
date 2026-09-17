@@ -17,11 +17,11 @@
 
 ```powershell
 # 1. 技能脚本自身健康（应打印 SELFTEST PASS）
-py -3 "$env:USERPROFILE\.dsh\skills\multi-window-m-035\scripts\taskctl.py" selftest
+py -3 "$env:USERPROFILE\.dsh\skills\multi-window-m-036\scripts\taskctl.py" selftest
 
 # 2. 桥接脚本能不能被拉起（无 .task/ 时应打印 HOOK_AUDIT_SKIP 且退出码 0）
 '{"hook_event_name":"Stop","session_id":"dry-run","cwd":"."}' |
-  py -3 "$env:USERPROFILE\.dsh\skills\multi-window-m-035\scripts\dsh-hook-bridge.py"
+  py -3 "$env:USERPROFILE\.dsh\skills\multi-window-m-036\scripts\dsh-hook-bridge.py"
 ```
 
 第 2 条即使失败也**只报错不炸 dsh**：桥接捕获所有异常并恒退出 0。
@@ -35,7 +35,7 @@ py -3 "$env:USERPROFILE\.dsh\skills\multi-window-m-035\scripts\taskctl.py" selft
 # 你的 profile patch 层：在每个 bundle 层之后应用
 - name: '@deepseek-ai/dsh-hooks-claude-code'
   config:
-    configPath: C:\Users\user\.dsh\skills\multi-window-m-035\scripts\dsh-hooks.example.json
+    configPath: C:\Users\user\.dsh\skills\multi-window-m-036\scripts\dsh-hooks.example.json
 ```
 
 - `configPath` 在进程启动时读一次；相对路径按**启动 dsh 的目录**解析，所以用绝对路径最稳。

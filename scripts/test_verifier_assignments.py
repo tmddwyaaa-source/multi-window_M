@@ -1,4 +1,4 @@
-"""v0.35: 一任务两职责（worker 实现 + verifier 独立验收）。
+"""v0.36: 一任务两职责（worker 实现 + verifier 独立验收）。
 
 覆盖 Codex 的对齐要求：
   - round.tasks 只表达 worker 路由；round.verifier_assignments 表达验收路由；
@@ -286,7 +286,7 @@ def main() -> int:
         out,
     )
 
-    print("ALL v0.35 VERIFIER ASSIGNMENT CHECKS PASSED")
+    print("ALL v0.36 VERIFIER ASSIGNMENT CHECKS PASSED")
     print(f"temp: {temp}")
     return 0
 

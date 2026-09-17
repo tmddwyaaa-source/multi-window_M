@@ -2,6 +2,49 @@
 
 当前规则以 `SKILL.md` 的 `version` 字段为准。本文件只作历史说明，**不得当作当前规则引用**。
 
+## 0.36-dsh — 修工具误报与恢复路径，不加新门禁（2026-09-16）
+
+依据《0.36 方向文件》（Codex 撰写）与两份实测报告（0.35 门禁首跑、DEEPDIVE ROUND-004）。
+**035 目录冻结不动**；本版是隔离新建副本，先在技能自动发现目录外（`~/.dsh/skill-builds/`）开发与验证。
+
+### 修掉的真实缺陷
+
+| # | 缺陷 | 证据 | 修法 |
+|---|---|---|---|
+| 1 | **失败计数与换人互相堵死**：`attempt --owner` 既计数又交接，把计数推到 3/3 自动 `blocked`；再想救回时 `reassign` 因"owner 已经是它"被拒 → **没有任何子命令能把卡点从 `blocked` 里救回来** | DEEPDIVE §2.1，**已实测致硬停**，且其中一次失败是 M1 自己消耗的 | 一次真实失败只计一次（失败指纹去重，重复提交报 `DUPLICATE_EVENT`）；换人不增加失败次数；重复的同一交接只确认（`HANDOFF_CONFIRMED`）；同负责人可确认已有交接，但**不算满足第二次真换人**。第三次硬停**保留**，并统一给出 `HARD_STOP` token 与非 0 退出码 |
+| 2 | **`tests[].cmd` 被静默忽略**：工人写 `cmd` 而非 `command` → **15 条回归命令从未被重放**，门禁毫无提示 | DEEPDIVE 族 A2 | 新增 `UNKNOWN_FIELD`：指出**文件 + 条目 + 字段名 + 正确写法**（含相似度提示），不做静默容错；合法可选元数据不拒 |
+| 3 | **迁移死锁**：`migrate-project` 先把锁升到 schema 1，再检查既有文件 → 报 20 条 `SCHEMA_REGRESSION_RISK`，**命中每一个从 ≤0.34 迁移上来的项目**（即 `migrate-project` 的全部目标用户） | 0.35 实测报告 §4.26，记为"最高优先级工具缺陷" | 顺序反转为 **备份 → 识别旧格式 → 转换（只补版本标记）→ 验证 → 最后才提交版本标记**；缺信息**明确报告不编造**；失败**绝不留下"成功标记 + 无法操作"的半迁移状态** |
+| 4 | **`STALE_REPORT` 稳定假红**：4/4 任务命中，诱因是"流程自己刚写、尚未提交"的 `.task/` 产物进了 diff；标题会被读成"工人在偷改实现" | 0.35 实测报告 §2.5 | **取消 gate 与 round-close 的阻断**，只写日志 + `rerun.json` 留痕；不计失败次数 |
+| 5 | **文档教了一个不存在的参数**：`gate --full`（SKILL.md、task-gate.md、taskctl.py docstring/help 共 7 处），照抄即报错 | 0.35 实测报告 §2.1（P0） | **不加 `--full` 别名**（别名是复杂度入口）；统一为 `gate <TASK-ID>`（默认即完整验收）与 `--basic`（基础验收）。<!-- 0.36-doc-note: 本行记载历史缺陷，不是教用法 --> 并新增自检：文档里出现该坏字符串（除本行豁免外）一律判失败 |
+| 6 | **工人可静默改自己的 `verify_cmd` / `allowed_paths`**（自我验收漏洞） | 0.35 实测报告 §2.3，**真实发生** | 新增独立 `contract.json`（**工具自动生成**：`init` 与 `brief --role worker` 时落基线，M1 不需要额外命令）。收口时对比基线，变化报 `ACCEPTANCE_CHANGED`，把**原需求与原标准**交给验收者判断，M1 接受后才收口；**不断定是否放宽**，也**不宣称防作弊** |
+| 7 | **`allowed_paths` 承诺与实现不符**：文档说会拦越界，实测只检查**已申报**的改动 | 0.35 实测报告 §2.4 | 新增**整轮越界识别** `UNDECLARED_CHANGE`：排除流程产物、门禁自有产物、**其他任务的合法改动**与用户既有改动之后，仍无法解释的改动才在收口时阻断；**归属不确定只提示**，不简单归罪某个工人 |
+| 8 | **派工/收口不区分**：验收脚本是工人交付物，派工那刻必然不存在，却立刻报 `UNREPLAYABLE_COMMAND` 噪声 | DEEPDIVE 族 A1 | 改为**纯事实检查** `MISSING_ACCEPTANCE_SCRIPT`：派工不阻断；交付/收口只查存在性，缺失即失败。**绝不创建/覆盖/删除任何文件来制造验收前提**——曾一度用"临时落空壳再执行"实现，经 Codex 复核**否决并已移除**（占位改变被检查对象；空脚本可能退出 0，证明不了原命令可运行）。命令一律按原样执行 |
+| 9 | 验收命令强度没人管 | DEEPDIVE 族 A（`node --check` 只做语法解析却一路放行） | `packet` 生成时给**明显偏弱**的形态打 `WEAK_ACCEPTANCE` 提示（同时看 manifest 与 `worker-report.tests[]`）。**仅辅助提示**：不判 FAIL、不影响收口、不代替验收者判断 |
+
+### 新增诊断码
+
+`DUPLICATE_EVENT`、`UNKNOWN_FIELD`、`ACCEPTANCE_CHANGED`、`UNDECLARED_CHANGE`、`MISSING_ACCEPTANCE_SCRIPT`、`WEAK_ACCEPTANCE`（其中 `UNDECLARED_CHANGE` 与 `MISSING_ACCEPTANCE_SCRIPT` 是收口阻断，`WEAK_ACCEPTANCE` 是纯提示）。
+
+### 明确不做（写下来防止回流）
+
+- 不加 `gate --full` 别名<!-- 0.36-doc-note: 记载"明确不做"，不是教用法 -->
+- 不做 `MANIFEST_TAMPERED` 哈希锁 + 人工 `relock`（基线自动生成即可）
+- 不把 `allowed_paths` 降级为"只记录不强制"（它是**协调机制**：防并行窗口误改别人的模块）
+- 不用 mtime 判迁移（文件复制/还原会改变时间）
+- 不新增 `shared_paths` 白名单（共享文件用**批次串行**解决）
+- 不把测量值（token / 体积 / 命中率）放进 Gate
+- **不创建占位/空壳/临时文件来制造验收前提**（改变了被检查对象；空脚本可能退出 0，证明不了原命令可运行；并发窗口还可能互相覆盖或误删）
+- 不为"制造验收前提"而覆盖或删除业务文件、测试脚本
+
+### 测试
+
+- `selftest` **17 套全绿**。新增三套：
+  - `test_migration_deadlock.py`（10 项）：复现并验证迁移死锁已修，含"失败不半迁移"
+  - `test_direction_acceptance.py`（18 项）：按《0.36 方向文件》第 7 节逐项验收
+  - `test_script_fact_check.py`（11 项）：按《0.36 验收修正》第三节五个场景验证，**每条都检查真实前后文件状态**（不只是断言 token/退出码）
+- Codex 版 `test_retry_ladder.py` 在本版上**原样通过 5/5**：三次失败梯级的语义未被削弱。
+- 被改动的既有断言（均已在测试里注明理由）：`K-pos-third-failure-hits-cap`（硬停现在给 token 与非 0）、`K-neg-reassign-same-owner-rejected`（拆成"有历史→确认"与"无历史→拒绝"两条）、`U-neg-missing-declared-file-is-blocked`（改为按真实执行结果阻断）、`D2-*`（stale 取消阻断）、`M-pos-lock-fields`（迁移结束状态为 `converted`）。
+
 ## 0.35-dsh — schema 契约、只读 status、关轮、不可重放命令（2026-09）
 
 依据 `skill测试报告.md`（D:\8xgg\project 三轮真实交付，19 个任务）与 Codex 的《给 DSH：0.34 实测后的兼容性决策与实施顺序》。**0.34 目录保持不动**，本版是新建隔离副本。
@@ -10,7 +53,7 @@
 
 | 问题 | 出处 | 处理 |
 |---|---|---|
-| `status` 会逐任务重跑 Gate（含 ~90s 回归命令），多任务时被 harness 120s 掐断 | 报告 §4.8 | **`status` 改为只读**：不执行任何 shell 命令，只显示上次真跑的记录（`GATE_PASS`/`GATE_FAIL`/`GATE_NOT_RUN`/`GATE_STALE`）。需要重算用显式 `--deep`。收口仍由 `gate --full` / `audit-round` 负责 |
+| `status` 会逐任务重跑 Gate（含 ~90s 回归命令），多任务时被 harness 120s 掐断 | 报告 §4.8 | **`status` 改为只读**：不执行任何 shell 命令，只显示上次真跑的记录（`GATE_PASS`/`GATE_FAIL`/`GATE_NOT_RUN`/`GATE_STALE`）。需要重算用显式 `--deep`。收口仍由 `gate <TASK-ID>`（默认即完整验收；**0.36 起文档不再宣称存在 `--full` 参数**）/ `audit-round` 负责 |
 | 没有关轮命令，第二轮开不了，只能手工删 `round.json` | 报告 §2.3 | **新增 `round-close`**：仅当整轮任务全部 `done` 且审计通过，才把 `round.json` **原子归档**到 `.task/rounds/`；未完成任务一律拒绝；绝不自动触发 |
 | `tests[].command` 写占位符 / 说明文字 / 已删文件，Full Gate 逐字重放 → 永久 FAIL | 报告 §2.9、§4.3、§4.7、§4.15（**同一根因出现 3 次**） | **新增 `UNREPLAYABLE_COMMAND` 预检**：占位符、全角/中文说明、无运行器前缀、引用已声明却缺失的文件 → 收口前直接报明码并指出条目。**它是验收证据错误，不推进卡点计数** |
 | verify-report 会在文件被改后继续被当证据用 | 报告 §2.22 | **新增 `STALE_REPORT`**：报告自称的 `changed_files` 之后又被改过 → 报明码。判据用**内容指纹**，不用 mtime。**分层**：日常 `gate` / 例行 `audit-round` / hook 审计只**提示**；**只有 `round-close` 归档时阻断**。它只提示报告可能旧了，**不声称**已保证验收新鲜 |
