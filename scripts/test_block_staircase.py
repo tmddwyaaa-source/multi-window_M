@@ -226,15 +226,24 @@ def main() -> int:
         f"code={code} out={out} block={manifest.get('block_attempts')} attempt={manifest.get('attempt')}",
     )
 
-    code, out = run(
-        ["--root", str(root), "reassign", "TASK-001", "--owner", "M9", "--reason", "换独立负责人"]
+    # 越界窗拒绝用**独立场景**测：这里已经进入"第 2 次失败"状态，
+    # 而 0.36 要求硬停/阻塞的判定优先于其它校验，混在这一串里会测错对象。
+    outsider_root = Path(tempfile.mkdtemp(prefix="m036-outsider-"))
+    seed(outsider_root)
+    run(
+        ["--root", str(outsider_root), "attempt", "TASK-001",
+         "--block-id", "B1", "--reason", "f1", "--actor", "worker"]
     )
-    manifest = manifest_of(root)
+    code, out = run(
+        ["--root", str(outsider_root), "reassign", "TASK-001", "--owner", "M9",
+         "--reason", "换独立负责人"]
+    )
     expect(
         "K-neg-reassign-outsider-rejected",
         code != 0 and "REASSIGN_FAIL" in out and "expected_windows" in out,
         f"code={code} out={out}",
     )
+    manifest = manifest_of(root)
     # 方向文件 §6.1：同负责人**可以确认已有交接**（幂等），但不新增记录、不增加失败次数。
     failures_before = manifest_of(root)["block_attempts"]["attempts"]
     history_before = len(manifest_of(root).get("assignment_history") or [])

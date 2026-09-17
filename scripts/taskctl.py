@@ -83,6 +83,7 @@ KNOWN_COMMANDS = {
     "brief",
     "packet",
     "handoff",
+    "adjudicate",
     "assign-verifier",
     "sync-worker-route",
 }
@@ -156,6 +157,7 @@ MUTATING_COMMANDS = {
     "reassign",
     "hook-audit",
     "migrate-project",
+    "adjudicate",
 }
 LOCK_REL = ".task/skill-lock.json"
 MIGRATE_REPORT_REL = "docs/MIGRATE-REPORT.md"
@@ -366,15 +368,40 @@ def project_contract_schema(root: Path) -> int:
         return 0
 
 
+def disk_schema_high_water(root: Path) -> int:
+    """磁盘上共同文件声明过的**最高** schema 版本。
+
+    项目契约应当与之一致：若锁低于它，说明这个项目确实有新版写出的数据，
+    锁该被拉高（而不是把旧文件判成回归）。
+    """
+    highest = 0
+    for path in shared_schema_files(root):
+        try:
+            highest = max(highest, schema_version_of(read_json(path)))
+        except ValueError:
+            continue
+    return highest
+
+
 def schema_regression_problems(root: Path) -> List[str]:
-    """活动轮 / 任务目录缺版本标记，而项目已声明更高契约 → 说明被旧宿主写过。
+    """活动轮 / **已开工**任务缺版本标记，而项目已声明更高契约 → 说明被旧宿主写过。
 
     这是 `UNSUPPORTED_SCHEMA` 的**反方向**：那个防"未来版写的数据被现在这版乱改"，
-    这个防"现在这版写的数据被更旧的宿主乱改"。旧宿主不认识 `schema_version`，
-    所以它既不会维护这个标记，也不会报错——只能由这里发现。
+    这个防"现在这版写的数据被更旧的宿主乱改"。
+
+    **判据收窄**（否则会误伤）：
+      - 先把项目契约与磁盘上的最高版本对齐——项目里只要有任何带标记的文件，
+        锁就不该更低；
+      - `round.json` 只在**本轮已把任务派出去**（`round.tasks` 非空）时才算；
+      - 任务只在**已开工**（`status` 不是 pending/paused）时才算。
+    未开工的模板本来就可以没有标记，不该被当成回归。
     """
-    declared = project_contract_schema(root)
+    declared = max(project_contract_schema(root), disk_schema_high_water(root))
     if declared <= 0:
+        return []
+    # 项目里若**没有任何**带标记的文件，说明契约是刚被工具写下的（例如 `init`），
+    # 此时把旧格式文件判成"回归"是误报。只有在确实存在带标记文件时才启用回归检测。
+    if disk_schema_high_water(root) <= 0:
         return []
     problems: List[str] = []
     round_file = round_path(root)
@@ -383,11 +410,15 @@ def schema_regression_problems(root: Path) -> List[str]:
             data = read_json(round_file)
         except ValueError:
             data = None
-        if isinstance(data, dict) and schema_version_of(data) < declared:
+        if (
+            isinstance(data, dict)
+            and schema_version_of(data) < declared
+            and current_round_task_ids(data)
+        ):
             problems.append(
                 f"{SCHEMA_REGRESSION_RISK}: .task/round.json declares "
-                f"schema_version={schema_version_of(data)} but .task/skill-lock.json "
-                f"declares {declared}：这一轮是被**更旧的宿主**写出/改写的，"
+                f"schema_version={schema_version_of(data)} but the project declares "
+                f"{declared}：这一轮是被**更旧的宿主**写出/改写的，"
                 "按旧规则收口会与现行规则冲突。请用当前版本的 taskctl 重新 round-init，"
                 "或先确认没有旧宿主在操作这个项目。"
             )
@@ -399,12 +430,17 @@ def schema_regression_problems(root: Path) -> List[str]:
             manifest = read_json(manifest_file)
         except ValueError:
             continue
-        if schema_version_of(manifest) < declared:
-            problems.append(
-                f"{SCHEMA_REGRESSION_RISK}: .task/{directory.name}/manifest.json declares "
-                f"schema_version={schema_version_of(manifest)} but the project declares "
-                f"{declared}：该任务正被更旧的宿主改写，`block_attempts` 等新字段可能被绕过。"
-            )
+        if schema_version_of(manifest) >= declared:
+            continue
+        status = str(manifest.get("status") or "pending")
+        if status in {"pending", "paused"}:
+            continue  # 未开工的模板允许没有标记
+        problems.append(
+            f"{SCHEMA_REGRESSION_RISK}: .task/{directory.name}/manifest.json declares "
+            f"schema_version={schema_version_of(manifest)} but the project declares "
+            f"{declared}：该任务已开工却被更旧的宿主改写，"
+            "`block_attempts` 等新字段可能被绕过。"
+        )
     return problems
 
 
@@ -456,6 +492,57 @@ def record_status(manifest: Dict[str, Any], status: str, actor: str, reason: str
     )
 
 
+def repair_cycle(manifest: Dict[str, Any]) -> int:
+    """当前**修复轮次**：每一轮"施工 → 失败"就是一个修复轮。
+
+    它替代"自由文字"作为失败事件的身份（Codex 审阅问题 1）：
+    修复一轮之后**再次出现同样错误**是**新的失败**，必须计数；
+    而同一次失败被重复提交（同一轮内）不应计两次。
+    """
+    return max(0, int(manifest.get("repair_cycle", 0) or 0))
+
+
+def advance_repair_cycle(manifest: Dict[str, Any]) -> int:
+    """**结束**当前修复轮次（开始施工、收到失败、裁决解除硬停时各调用一次）。
+
+    职责单一：只负责 +1。调用点自己保证不会重复调用——不要在这里做
+    "当前是不是 in_progress" 的幂等判断：失败提交那一刻 status 还是
+    `in_progress`，那种判据会让计数静默失效。
+    """
+    manifest["repair_cycle"] = repair_cycle(manifest) + 1
+    return manifest["repair_cycle"]
+
+
+def hard_stop_active(manifest: Dict[str, Any]) -> bool:
+    """当前卡点是否处于**硬停**（第三次同根因失败）。
+
+    硬停不是"换个 owner 就能继续"的普通阻塞：它是"这对根因不能再盲改"的裁决结果。
+    """
+    return bool(manifest.get("hard_stop"))
+
+
+def hard_stop_blocks(status: str) -> bool:
+    """硬停期间**禁止**进入的状态：恢复施工与任何完成态。"""
+    return status in {
+        "in_progress",
+        "reopened",
+        "worker_done",
+        "verifying",
+        "verified",
+        "integrated",
+        "done",
+    }
+
+
+def hard_stop_refusal(task_id: str, target: str) -> str:
+    return (
+        f"HARD_STOP_ACTIVE: {task_id} 当前卡点已硬停（第三次同根因失败），"
+        f"不能通过普通换人/转换恢复施工（本次目标状态={target}）。"
+        "硬停只能由**明确的裁决**解除：用 `--adjudicate-hard-stop --reason <证据>`，"
+        "或换根因（`--new-root` 并给证据）。只读命令与写阻塞记录不受影响。"
+    )
+
+
 def current_attempts(manifest: Dict[str, Any]) -> int:
     """当前卡点的失败次数（不含首次派工）。
 
@@ -480,12 +567,17 @@ def is_legacy_unscoped(manifest: Dict[str, Any]) -> bool:
     return not (isinstance(block, dict) and block.get("block_id"))
 
 
-def failure_fingerprint(block_id: str, owner: str, reason: str) -> str:
-    """同一次失败的指纹：同 block + 同负责人 + 同原因 = 同一次失败。
+def failure_event_id(block_id: str, owner: str, reason: str, cycle: int) -> str:
+    """**一次失败事件**的身份 = 修复轮次 + 卡点 + 负责人 + 原因。
 
-    方向文件 §6.1 要求"重复处理同一次失败不重复增加计数或历史"。
+    关键在 `cycle`（修复轮次）：**自由文字不是事件身份**。
+    修复一轮之后再次出现同样的错误文字，是**新的失败**，必须计数；
+    只有在**同一修复轮内**、同卡点、同负责人、同原因被重复提交，
+    才视为"同一次失败被重复处理"（Codex 审阅问题 1）。
     """
-    payload = "\n".join([str(block_id or ""), str(owner or ""), str(reason or "").strip()])
+    payload = "\n".join(
+        [str(cycle), str(block_id or ""), str(owner or ""), str(reason or "").strip()]
+    )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 
@@ -521,8 +613,9 @@ def bump_block_attempt(
 ) -> Tuple[Dict[str, Any], str]:
     """记录**一次新的**卡点失败；同一 block_id 累加，改根因必须给证据。
 
-    去重：与已记录失败指纹相同的事件不再计数、不再写历史
-    （方向文件 §6.1）。**换人不增加失败次数**，交接由 `assignment_history` 承载。
+    去重按**失败事件**：同修复轮次 + 同卡点 + 同负责人 + 同原因才算"同一次处理"被重复提交。
+    上一轮修复之后再次出现同样错误是**新的失败**，照常计数（Codex 审阅问题 1）。
+    **换人不增加失败次数**，交接由 `assignment_history` 承载。
 
     Returns (block_record, error). error 非空表示拒绝本次计数。
     """
@@ -543,15 +636,23 @@ def bump_block_attempt(
             return {}, "--new-root requires an evidence-bearing --reason"
         block = {"block_id": block_id, "attempts": 0, "history": []}
         history: List[Any] = []
+        # 硬停属于**那一个根因**。换根因（带证据）意味着旧根因已处理，
+        # 硬停随之解除并留痕——否则新根因会被旧硬停永久挡住。
+        if manifest.get("hard_stop"):
+            manifest["hard_stop"] = False
+            manifest.setdefault("hard_stop_cleared", []).append(
+                {"at": now_iso(), "by": "new-root", "reason": reason, "block_id": block_id}
+            )
     else:
         if not isinstance(block, dict) or not block.get("block_id"):
             block = {"block_id": block_id, "attempts": 0, "history": []}
         history = block_history_entries(block)
-    fingerprint = failure_fingerprint(block_id, owner, reason)
+    cycle = repair_cycle(manifest)
+    event_id = failure_event_id(block_id, owner, reason, cycle)
     if any(
-        isinstance(item, dict) and item.get("failure_id") == fingerprint for item in history
+        isinstance(item, dict) and item.get("failure_id") == event_id for item in history
     ):
-        return {}, duplicate_failure_error(block, fingerprint)
+        return {}, duplicate_failure_error(block, event_id)
     attempts = max(0, int(block.get("attempts", 0) or 0)) + 1
     if attempts > MAX_BLOCK_ATTEMPTS:
         return {}, (
@@ -562,7 +663,8 @@ def bump_block_attempt(
         {
             "attempt": attempts,
             "block_id": block_id,
-            "failure_id": fingerprint,
+            "failure_id": event_id,
+            "repair_cycle": cycle,
             "at": now_iso(),
             "owner": owner or manifest.get("owner") or "?",
             "reason": reason,
@@ -646,6 +748,8 @@ def gate_owned_paths(task_id: str) -> set[str]:
         normalized_path(f".task/{task_id}/manifest.json"),
         normalized_path(f".task/{task_id}/rerun.json"),
         normalized_path(f".task/{task_id}/verify-report.json"),
+        # 工具自己写的派工基线：不是工人改动，不该要求申报。
+        normalized_path(f".task/{task_id}/contract.json"),
     }
 
 
@@ -1521,10 +1625,14 @@ def contract_path(root: Path, task_id: str) -> Path:
 
 
 def contract_baseline(manifest: Dict[str, Any]) -> Dict[str, Any]:
-    """派工基线的**内容**快照：需求引用 + verify_cmd + allowed_paths + risk。
+    """派工基线的**内容**快照：需求引用 + 参与验收的字段 + allowed_paths + risk。
 
     方向文件 §6.5：独立 `contract.json` 存基线，**不作为第二套任务状态**；
     可检测误改，**不宣称防作弊**（放在工人可写的位置，工具只是对比，不是权限隔离）。
+
+    0.36 修正（Codex 审阅问题 4）：必须保存**原需求文字**，并覆盖**所有参与验收的
+    字段**（`verify` 与 `verify_cmd` 都要），否则"把原标准交给验收者"是空话，
+    而且只改 `verify` 会被漏检。
     """
     requirements = manifest.get("requirements")
     normalized_requirements: List[Dict[str, Any]] = []
@@ -1535,6 +1643,7 @@ def contract_baseline(manifest: Dict[str, Any]) -> Dict[str, Any]:
             normalized_requirements.append(
                 {
                     "id": str(item.get("id") or ""),
+                    "text": str(item.get("text") or ""),
                     "verify": str(item.get("verify") or ""),
                     "verify_cmd": str(item.get("verify_cmd") or ""),
                 }
@@ -1549,98 +1658,281 @@ def contract_baseline(manifest: Dict[str, Any]) -> Dict[str, Any]:
         else [],
         "risk": str(manifest.get("risk") or ""),
         "source_refs": [
-            {"id": str(ref.get("id") or ""), "maps_to": sorted(str(m) for m in (ref.get("maps_to") or []))}
+            {
+                "id": str(ref.get("id") or ""),
+                "text": str(ref.get("text") or ""),
+                "maps_to": sorted(str(m) for m in (ref.get("maps_to") or [])),
+            }
             for ref in (manifest.get("source_refs") or [])
             if isinstance(ref, dict)
         ],
     }
 
 
-def ensure_contract(root: Path, task_id: str, manifest: Dict[str, Any], actor: str) -> Path:
-    """按需生成基线；只在 M1 派工阶段（`init` / `brief --role worker`）落一次。
+def contract_ready(manifest: Dict[str, Any]) -> bool:
+    """需求是否已填好、可以据此建立派工基线。
 
-    绝不因为"文件已存在"而永久禁止必要修复——重写基线只需要一次显式动作。
+    `init` 只生成**待规划模板**（占位文字），此时不能冻结基线，
+    否则正常填写需求会被判成"改验收标准"（Codex 审阅问题 3）。
+    """
+    requirements = manifest.get("requirements")
+    if not isinstance(requirements, list) or not requirements:
+        return False
+    allowed = manifest.get("allowed_paths")
+    if not isinstance(allowed, list) or not allowed:
+        return False
+    for item in requirements:
+        if not isinstance(item, dict):
+            return False
+        if not str(item.get("id") or "").strip():
+            return False
+        if not str(item.get("text") or "").strip():
+            return False
+        placeholder = str(item.get("text") or "")
+        if "请由 M1" in placeholder or "请填写" in placeholder:
+            return False
+        verify = str(item.get("verify") or "").strip()
+        verify_cmd = str(item.get("verify_cmd") or "").strip()
+        if not verify and not verify_cmd:
+            return False
+        if "请填写验证方法" in verify:
+            return False
+    return True
+
+
+def ensure_contract(
+    root: Path, task_id: str, manifest: Dict[str, Any], actor: str
+) -> Tuple[Optional[Path], str]:
+    """按需生成基线。**只在需求已就绪时**建立，且只在文件缺失时建立。
+
+    Returns (path, error)：error 非空表示基线应建但建立失败（调用方不得静默继续）。
     """
     path = contract_path(root, task_id)
     if path.is_file():
-        return path
-    write_json(
-        path,
-        {
-            "task_id": task_id,
-            "created_at": now_iso(),
-            "created_by": actor,
-            "note": "工具自动生成的派工基线；用于检测验收标准被误改，不是权限隔离。",
-            "baseline": contract_baseline(manifest),
-        },
-    )
-    return path
+        return path, ""
+    if not contract_ready(manifest):
+        return None, ""
+    try:
+        write_json(
+            path,
+            {
+                "task_id": task_id,
+                "created_at": now_iso(),
+                "created_by": actor,
+                "note": (
+                    "工具自动生成的派工基线；用于检测验收标准被误改，不是权限隔离。"
+                    "它保存原需求文字与参与验收的字段，供验收者对照。"
+                ),
+                "baseline": contract_baseline(manifest),
+                "accepted_changes": [],
+            },
+        )
+    except OSError as exc:
+        return None, f"CONTRACT_WRITE_FAILED: 无法写入 {path.name}: {exc}"
+    return path, ""
 
 
-def contract_changes(root: Path, task_id: str, manifest: Dict[str, Any]) -> List[str]:
-    """对比当前 manifest 与派工基线，只**描述变化**，不断定是否放宽。
-
-    方向文件 §6.5：变化不自动等于放宽；由验收者对照原需求说明是否等价，
-    M1 明确接受后才能收口。工具不新增任何需要用户学习的命令。
-    """
+def load_contract(root: Path, task_id: str) -> Tuple[Optional[Dict[str, Any]], str]:
+    """读取基线。**缺失或损坏必须显式说明**，不能静默当成"没有变化"。"""
     path = contract_path(root, task_id)
     if not path.is_file():
-        return []
+        return None, "NO_BASELINE"
     try:
         stored = read_json(path)
     except ValueError:
-        return []
+        return None, "BASELINE_CORRUPT"
     baseline = stored.get("baseline")
     if not isinstance(baseline, dict):
-        return []
+        return None, "BASELINE_CORRUPT"
+    return stored, ""
+
+
+def contract_diffs(
+    root: Path, task_id: str, manifest: Dict[str, Any]
+) -> Tuple[List[Dict[str, Any]], str]:
+    """对比当前 manifest 与派工基线，返回**结构化差异**与基线状态。
+
+    比较的是**所有参与验收的字段**（含 `verify`）；只描述变化，不断定放宽。
+    """
+    stored, status = load_contract(root, task_id)
+    if stored is None:
+        return [], status
+    baseline = stored["baseline"]
     current = contract_baseline(manifest)
-    if baseline == current:
-        return []
-    changes: List[str] = []
+    diffs: List[Dict[str, Any]] = []
     if baseline.get("allowed_paths") != current.get("allowed_paths"):
-        added = sorted(set(current["allowed_paths"]) - set(baseline.get("allowed_paths") or []))
-        removed = sorted(set(baseline.get("allowed_paths") or []) - set(current["allowed_paths"]))
-        if added:
-            changes.append(f"allowed_paths 新增: {', '.join(added)}")
-        if removed:
-            changes.append(f"allowed_paths 移除: {', '.join(removed)}")
+        diffs.append(
+            {
+                "field": "allowed_paths",
+                "before": baseline.get("allowed_paths") or [],
+                "after": current.get("allowed_paths") or [],
+            }
+        )
     if baseline.get("risk") != current.get("risk"):
-        changes.append(f"risk: {baseline.get('risk')} -> {current.get('risk')}")
-    before_cmds = {
-        item.get("id"): item.get("verify_cmd") for item in (baseline.get("requirements") or [])
+        diffs.append({"field": "risk", "before": baseline.get("risk"), "after": current.get("risk")})
+    before_reqs = {
+        item.get("id"): item for item in (baseline.get("requirements") or []) if isinstance(item, dict)
     }
-    after_cmds = {item.get("id"): item.get("verify_cmd") for item in current["requirements"]}
-    for requirement_id in sorted(set(before_cmds) | set(after_cmds), key=str):
-        before = before_cmds.get(requirement_id)
-        after = after_cmds.get(requirement_id)
-        if before != after:
-            changes.append(
-                f"requirements[{requirement_id}].verify_cmd: {before!r} -> {after!r}"
-            )
+    after_reqs = {item.get("id"): item for item in current["requirements"]}
+    for requirement_id in sorted(set(before_reqs) | set(after_reqs), key=str):
+        before = before_reqs.get(requirement_id) or {}
+        after = after_reqs.get(requirement_id) or {}
+        for field in ("text", "verify", "verify_cmd"):
+            if str(before.get(field) or "") != str(after.get(field) or ""):
+                diffs.append(
+                    {
+                        "field": f"requirements[{requirement_id}].{field}",
+                        "before": before.get(field),
+                        "after": after.get(field),
+                    }
+                )
     if baseline.get("source_refs") != current.get("source_refs"):
-        changes.append("source_refs 映射发生变化")
-    return changes
+        diffs.append(
+            {
+                "field": "source_refs",
+                "before": baseline.get("source_refs") or [],
+                "after": current.get("source_refs") or [],
+            }
+        )
+    return diffs, ""
 
 
-def validate_contract(root: Path, task_id: str, manifest: Dict[str, Any]) -> List[str]:
-    """标准变更：**提示变化，确认后才收口**（方向文件 §3「标准改变」）。"""
-    changes = contract_changes(root, task_id, manifest)
-    if not changes:
+def describe_diffs(diffs: List[Dict[str, Any]]) -> str:
+    return "; ".join(
+        f"{item['field']}: {item.get('before')!r} -> {item.get('after')!r}" for item in diffs
+    )
+
+
+def acceptance_key(diffs: List[Dict[str, Any]]) -> str:
+    payload = json.dumps(
+        [[item["field"], item.get("before"), item.get("after")] for item in diffs],
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+
+
+def validate_contract(
+    root: Path,
+    task_id: str,
+    manifest: Dict[str, Any],
+    *,
+    required: bool = False,
+) -> List[str]:
+    """标准变更：**提示变化，确认后才收口**（方向文件 §3「标准改变」）。
+
+    - 基线缺失/损坏：`required=True`（收口）时阻断，否则只提示；
+    - 有变化：给出**原需求文字与原标准**，要求 M1 明确接受；
+    - 已接受且与当前变化一致：放行，并把接受记录留在 `contract.json`。
+    """
+    stored, status = load_contract(root, task_id)
+    if status == "NO_BASELINE":
+        # 派工基线在**派工点**（`gate --dispatch` 或 M1 出 worker 简报）建立。
+        # 没有基线时**不阻断**：历史任务（在基线机制之前派工的）本来就没有，
+        # 不能因此永远收不了口。但必须把"没有对照物"这件事说出来，
+        # 不能让"已对照原标准"变成一个没有依据的声明。
+        print(
+            "ACCEPTANCE_BASELINE_MISSING: "
+            f"{task_id} 无派工基线（contract.json）；本次**未**对照原标准。"
+            f"要建立基线请在派工点跑 `gate {task_id} --dispatch`。"
+        )
         return []
-    detail = "; ".join(changes)
+    if status == "BASELINE_CORRUPT":
+        return [
+            f"ACCEPTANCE_BASELINE_CORRUPT: {task_id} 的 contract.json 缺失或结构不合法；"
+            "不能当作「没有变化」，请重建基线（不要在未核对的情况下覆盖）。"
+        ]
+    diffs, _ = contract_diffs(root, task_id, manifest)
+    if not diffs:
+        return []
+    accepted = stored.get("accepted_changes")
+    key = acceptance_key(diffs)
+    if isinstance(accepted, list) and any(
+        isinstance(item, dict) and item.get("key") == key for item in accepted
+    ):
+        return []
+    original = stored.get("baseline") or {}
+    original_requirements = "; ".join(
+        f"{item.get('id')}: {item.get('text')}（verify={item.get('verify') or item.get('verify_cmd')}）"
+        for item in (original.get("requirements") or [])
+        if isinstance(item, dict)
+    )
     return [
         "ACCEPTANCE_CHANGED: "
-        f"{task_id} 的派工基线被改动（{detail}）。"
+        f"{task_id} 的派工基线被改动（{describe_diffs(diffs)}）。"
+        f"原需求与原标准：{original_requirements or '(基线未记录)'}；"
         "变化不自动等于放宽：请由验收者对照**原需求**说明新标准是否等价或更严，"
-        "M1 明确接受后才能收口；不得只重跑修改后的命令就算通过。"
+        "再由 M1 用 `adjudicate - accept`（记录理由）后才收口；"
+        "不得只重跑修改后的命令就算通过。"
     ]
 
 
+def cmd_adjudicate(args: argparse.Namespace, root: Path) -> int:
+    """M1 对"验收标准变更"的显式接受（不新增角色，只落一条可审计记录）。"""
+    if args.actor != "M1":
+        print("ADJUDICATE_FAIL: requires actor=M1")
+        return 1
+    manifest, errors = load_manifest(root, args.task_id)
+    if manifest is None:
+        print("ADJUDICATE_FAIL")
+        for error in errors:
+            print(f"- {error}")
+        return 1
+    if args.kind != "accept":
+        print(f"ADJUDICATE_FAIL: unsupported kind {args.kind!r}")
+        return 1
+    stored, status = load_contract(root, args.task_id)
+    if stored is None:
+        print(f"ADJUDICATE_FAIL: {status}; 没有基线可对照")
+        return 1
+    diffs, _ = contract_diffs(root, args.task_id, manifest)
+    if not diffs:
+        print("ADJUDICATE_NOOP: 当前没有标准变化可接受")
+        return 0
+    record = {
+        "key": acceptance_key(diffs),
+        "at": now_iso(),
+        "by": args.actor,
+        "reason": args.reason,
+        "diffs": diffs,
+        "original_requirements": (stored.get("baseline") or {}).get("requirements") or [],
+    }
+    stored.setdefault("accepted_changes", [])
+    if not isinstance(stored["accepted_changes"], list):
+        stored["accepted_changes"] = []
+    stored["accepted_changes"].append(record)
+    write_json(contract_path(root, args.task_id), stored)
+    print(f"ACCEPTANCE_ACCEPTED {args.task_id} by {args.actor}")
+    print(f"- 变化: {describe_diffs(diffs)}")
+    print(f"- 理由: {args.reason}")
+    return 0
+
+
+def current_round_task_ids(round_data: Optional[Dict[str, Any]]) -> List[str]:
+    """**本轮**实际挂的任务（`round.tasks` 的值）。
+
+    越界判据必须限定本轮：历史 done 任务的 `allowed_paths` 不能永久替本轮授权
+    （Codex 审阅问题 5 反例 A）。
+    """
+    if not isinstance(round_data, dict):
+        return []
+    tasks = round_data.get("tasks")
+    if not isinstance(tasks, dict):
+        return []
+    ids: List[str] = []
+    for values in tasks.values():
+        if isinstance(values, list):
+            ids.extend(str(value) for value in values if value)
+        elif isinstance(values, str) and values:
+            ids.append(values)
+    return list(dict.fromkeys(ids))
+
+
 def all_authorized_paths(round_data: Optional[Dict[str, Any]], root: Path) -> List[str]:
-    """本轮**所有**任务已授权路径的并集（整轮越界判据）。"""
+    """**本轮**所有任务已授权路径的并集（整轮越界判据）。"""
     authorized: List[str] = []
-    for directory in sorted(task_root(root).glob("TASK-*")):
-        manifest_file = directory / "manifest.json"
+    for task_id in current_round_task_ids(round_data):
+        manifest_file = task_dir(root, task_id) / "manifest.json"
         if not manifest_file.is_file():
             continue
         try:
@@ -1655,6 +1947,24 @@ def all_authorized_paths(round_data: Optional[Dict[str, Any]], root: Path) -> Li
         if isinstance(extra, list):
             authorized.extend(str(value) for value in extra if str(value).strip())
     return sorted({normalized_path(value) for value in authorized})
+
+
+def round_baseline_fingerprint(root: Path, round_data: Optional[Dict[str, Any]]) -> Dict[str, str]:
+    """开轮时的**工作区内容基线**（文件 → 内容哈希）。
+
+    `round-init` 时记录。用它区分"用户开轮前就有的改动"与"本轮新造成的改动"：
+    内容与基线相同的路径不算本轮越界；之后**再次被改**（内容变化）仍要判
+    （Codex 审阅问题 5：既有文件后来又被改，不能因为"开轮前已脏"就全部放过）。
+    """
+    stored = round_data.get("workspace_baseline") if isinstance(round_data, dict) else None
+    return stored if isinstance(stored, dict) else {}
+
+
+def record_round_baseline(root: Path) -> Dict[str, str]:
+    git_status, diff_files = git_changed_files(root)
+    if git_status != "ok":
+        return {}
+    return content_fingerprint(root, diff_files)
 
 
 def process_owned_paths() -> set[str]:
@@ -1681,6 +1991,7 @@ def round_overrun_files(
         return [], []
     authorized = all_authorized_paths(round_data, root)
     owned = process_owned_paths()
+    baseline = round_baseline_fingerprint(root, round_data)
     unexplained: List[str] = []
     for raw in diff_files:
         path = normalized_path(raw)
@@ -1691,6 +2002,13 @@ def round_overrun_files(
             continue
         if path_allowed(path, authorized):
             continue
+        # 开轮前就存在、且**内容未变**的改动属于用户既有改动，不算本轮越界。
+        # 但内容若与开轮基线不同（被再次修改），仍然要判。
+        if baseline:
+            recorded = baseline.get(path)
+            candidate = root / path
+            if recorded is not None and candidate.is_file() and recorded == sha256_file(candidate):
+                continue
         unexplained.append(path)
     return sorted(set(unexplained)), authorized
 
@@ -1776,6 +2094,8 @@ def validate_evidence_rerun(
     root: Path,
     task_id: str,
     manifest: Dict[str, Any],
+    *,
+    closure: bool = False,
 ) -> List[str]:
     errors: List[str] = []
     report: Optional[Dict[str, Any]] = None
@@ -1829,7 +2149,8 @@ def validate_evidence_rerun(
 
     commands = collect_verify_commands(manifest, report)
     # 标准变更先于命令执行判定：否则被改过的命令先跑，变化就藏在别的失败后面了。
-    contract_errors = validate_contract(root, task_id, manifest)
+    # （基线的自动建立已在 gate() 入口完成，这里不再重复。）
+    contract_errors = validate_contract(root, task_id, manifest, required=closure)
     if contract_errors:
         emit_acceptance_changed(contract_errors)
     errors.extend(contract_errors)
@@ -1964,8 +2285,9 @@ def emit_unknown_field(errors: List[str]) -> None:
 
 
 def emit_acceptance_changed(errors: List[str]) -> None:
-    if any("ACCEPTANCE_CHANGED" in str(error) for error in errors):
-        print("ACCEPTANCE_CHANGED")
+    for token in ("ACCEPTANCE_CHANGED", "ACCEPTANCE_BASELINE_MISSING", "ACCEPTANCE_BASELINE_CORRUPT"):
+        if any(token in str(error) for error in errors):
+            print(token)
 
 
 def emit_missing_acceptance_script(errors: List[str]) -> None:
@@ -2144,8 +2466,14 @@ def gate(
 ) -> List[str]:
     """`closure=True` 表示这次判定要用来**收口**，而不是日常迭代。
 
-    差别只在证据新鲜度：收口时过期报告（`STALE_REPORT`）是阻断项，迭代时只是提示。
-    其余规则完全相同，避免出现"收口用的是一套规则、迭代用的是另一套"。
+    `phase`：
+      - `basic`（`--basic`）：只核工人材料，不重跑命令、不碰派工基线；
+      - `full`（默认）：完整验收；
+      - `dispatch`（`--dispatch`）：**派工点**——需求/边界/映射都填好后建立派工基线。
+        基线必须在这里建立，否则"原标准"会记在需求还没写完的半成品上
+        （Codex 审阅问题 3）。
+
+    差别只在证据新鲜度与派工基线：其它规则完全相同，避免出现"收口一套、迭代一套"。
     """
     schema_errors = schema_problems(root)
     if schema_errors:
@@ -2157,6 +2485,19 @@ def gate(
     policy = verification_policy(manifest)
     if policy["conflict"]:
         return [policy["conflict"]]
+    if phase == "dispatch":
+        # 派工点：需求必须已就绪，然后建立基线（工具动作，M1 不需要额外命令）。
+        if not contract_ready(manifest):
+            return [
+                "DISPATCH_NOT_READY: "
+                f"{task_id} 的 requirements / allowed_paths / source_refs 还没填完，"
+                "不能派工；填好后重跑 `gate <task> --dispatch`。"
+            ]
+        _, boot_error = ensure_contract(root, task_id, manifest, "taskctl")
+        if boot_error:
+            return [boot_error]
+        print(f"CONTRACT_BASELINE_READY {task_id}")
+        return []
     errors.extend(validate_manifest(manifest, task_id))
     errors.extend(validate_manifest_commands(manifest))
     errors.extend(validate_worker(root, task_id, manifest))
@@ -2181,7 +2522,7 @@ def gate(
                     required=policy["independent_verification"],
                 )
             )
-        errors.extend(validate_evidence_rerun(root, task_id, manifest))
+        errors.extend(validate_evidence_rerun(root, task_id, manifest, closure=closure))
     return errors
 
 
@@ -2282,8 +2623,8 @@ def cmd_init(args: argparse.Namespace, root: Path) -> int:
     }
     write_json(directory / "manifest.json", manifest)
     ensure_contract_schema(root)
-    # 派工基线：工具自动生成，不需要 M1 额外跑命令（方向文件 §6.5）。
-    ensure_contract(root, args.task_id, manifest, "taskctl")
+    # **不在 init 建基线**：此刻只有占位模板，冻结合同会把正常填写需求判成改标准
+    # （Codex 审阅问题 3）。基线在"需求已就绪"的派工点自动建立。
     print(f"CREATED {directory.relative_to(root)}")
     print("NEXT: edit manifest.json before dispatching the task")
     return 0
@@ -2345,6 +2686,9 @@ def cmd_round_init(args: argparse.Namespace, root: Path) -> int:
             "gears": default_gears(),
             "hook_supervision": False,
             "check_requested": False,
+            # 开轮时的工作区内容基线：用于区分"用户开轮前的既有改动"与"本轮新改动"
+            # （Codex 审阅问题 5）。空 dict 表示当时没有 git 或没有未提交改动。
+            "workspace_baseline": record_round_baseline(root),
         },
     )
     print(f"CREATED {path.relative_to(root)}")
@@ -2531,7 +2875,12 @@ def task_ids_for_round(data: Dict[str, Any]) -> List[str]:
 
 
 def cmd_gate(args: argparse.Namespace, root: Path) -> int:
-    phase = "basic" if args.basic else "full"
+    if getattr(args, "dispatch", False):
+        phase = "dispatch"
+    elif args.basic:
+        phase = "basic"
+    else:
+        phase = "full"
     errors = gate(root, args.task_id, phase)
     if errors:
         emit_policy_conflict(errors)
@@ -2882,39 +3231,98 @@ def cmd_hook_audit(
     return exit_code
 
 
+def validate_shared_file_compat(data: Any, rel: str) -> List[str]:
+    """结构兼容性验证（**不写盘**）：转换后能否被当前规则理解。
+
+    方向文件 §6.3 + Codex 审阅问题 7：不能只检查 `status`。
+
+    两类要分开判（Codex 的原文要求）：
+      - **未派工的模板留空是正常的**（`allowed_paths` / `requirements` 可以空），
+        但它必须**由工具创建的骨架**——`init` 总会写 `track` / `risk` / `status_history`，
+        缺这些说明它不是模板，而是**残缺文件**，不能标成兼容；
+      - **已开工/已交付的任务**缺 `owner` / `allowed_paths` / `requirements` 一律阻断。
+    """
+    if not isinstance(data, dict):
+        return [f"{rel}: 根不是 JSON 对象"]
+    problems: List[str] = []
+    status = str(data.get("status") or "pending")
+    if status not in TASK_STATES:
+        problems.append(f"{rel}: status={status!r} 不在当前规则允许的状态集里")
+
+    is_round = "round_id" in data or "expected_windows" in data
+    if is_round:
+        if not isinstance(data.get("expected_windows"), list) or not data.get("expected_windows"):
+            problems.append(f"{rel}: round 缺 expected_windows（结构必需）")
+        return problems
+
+    # 任务 manifest
+    if not str(data.get("task_id") or "").strip():
+        problems.append(f"{rel}: 缺 task_id（结构必需）")
+        return problems
+
+    missing_skeleton = [
+        field
+        for field in ("track", "risk", "status_history")
+        if data.get(field) in (None, "")
+    ]
+    if missing_skeleton:
+        # 不是"模板留空"，而是残缺文件：连骨架都不完整。
+        problems.append(
+            f"{rel}: 缺 {'、'.join(missing_skeleton)}（结构必需；工具创建的模板一定包含它们）"
+        )
+        return problems
+
+    started = status not in {"pending", "paused"}
+    if not str(data.get("owner") or "").strip():
+        problems.append(
+            f"{rel}: 缺 owner"
+            + ("（该任务已开工/已交付，owner 是结构必需）" if started else "（模板可留空）")
+        )
+    allowed = data.get("allowed_paths")
+    if not isinstance(allowed, list) or not allowed:
+        problems.append(
+            f"{rel}: 缺 allowed_paths"
+            + ("（该任务已开工/已交付，边界是结构必需）" if started else "（模板可留空）")
+        )
+    requirements = data.get("requirements")
+    if not isinstance(requirements, list) or not requirements:
+        problems.append(
+            f"{rel}: 缺 requirements"
+            + ("（该任务已开工/已交付，验收需求是结构必需）" if started else "（模板可留空）")
+        )
+    # 未开工：只保留结构性缺项（骨架已单独判过，这里只剩 status 之外的空洞）。
+    if not started:
+        return [item for item in problems if "已开工" not in item]
+    return problems
+
+
 def upgrade_shared_file_schema(
     path: Path, rel: str, target: int
-) -> Tuple[str, str, List[str]]:
-    """把一个共同文件提升到当前 schema，并保留原有语义。
+) -> Tuple[str, str, List[str], Optional[Dict[str, Any]]]:
+    """**纯计算**：算出这个文件转换后的内容，不写盘。
 
-    方向文件 §6.3：备份 → 识别旧格式 → 转换 → 验证 → 提交版本标记；
-    **不能只添 schema_version 就宣称全部兼容**，缺必要信息要出报告、不能编造。
-
-    本函数**只增加版本标记**，不改写任何语义字段（否则等于谎称旧文件按新规则写过）。
-    Returns (action, detail, problems)；action ∈ changed / already / skipped / failed。
+    方向文件 §6.3 + Codex 审阅问题 6：必须在**全部输入都预检通过之后**才提交；
+    失败不得留下任何部分修改。所以这里只返回"打算写成什么"，写盘由调用方统一做。
+    Returns (action, detail, problems, converted_data_or_None)。
     """
     try:
         data = read_json(path)
     except ValueError as exc:
-        return "failed", "", [f"{rel}: {exc}"]
+        return "failed", "", [f"{rel}: {exc}"], None
     declared = schema_version_of(data)
     if declared > target:
         return "skipped", f"schema_version={declared}", [
             f"{UNSUPPORTED_SCHEMA}: {rel} 声明 schema_version={declared} > {target}；"
             "本宿主读不懂，拒绝改写（保持只读）"
-        ]
-    problems: List[str] = []
-    # 验证：只检查"转换后能否被当前规则理解"，缺信息就报告，不编造默认值。
-    status = data.get("status")
-    if status is not None and str(status) not in TASK_STATES:
-        problems.append(f"{rel}: status={status!r} 不在当前规则允许的状态集里")
+        ], None
+    problems = validate_shared_file_compat(data, rel)
     if problems:
-        return "failed", f"schema_version={declared}", problems
+        return "failed", f"schema_version={declared}", problems, None
     if declared == target:
-        return "already", f"schema_version={declared}", []
-    data[SCHEMA_FIELD] = target
-    write_json(path, data)
-    return "changed", f"schema_version={declared} -> {target}", []
+        return "already", f"schema_version={declared}", [], None
+    converted = dict(data)
+    converted[SCHEMA_FIELD] = target
+    return "changed", f"schema_version={declared} -> {target}", [], converted
 
 
 def cmd_migrate_project(args: argparse.Namespace, root: Path) -> int:
@@ -2957,16 +3365,12 @@ def cmd_migrate_project(args: argparse.Namespace, root: Path) -> int:
     write_migrate_report(root, lock)
     print(f"REPORT {MIGRATE_REPORT_REL}")
 
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(source, destination)
-    task_root(root).mkdir(parents=True, exist_ok=True)
-    lock["status"] = "copied"
-    print(f"COPIED {dest_rel}")
-    print(f"MIGRATED {dest_rel} from multi-window-m-036 v{SKILL_VERSION}")
-
-    # ---- 转换既有 .task 共同文件：识别旧格式 → 只补版本标记 → 验证 ----
+    # ---- 第一步：**只预检**，不写任何共同文件 ----
+    # 方向文件 §6.3 + Codex 审阅问题 6：必须在全部输入都通过之后才提交；
+    # 失败绝不留下部分修改（包括目标脚本）。
     conversions: List[Dict[str, str]] = []
     problems: List[str] = []
+    pending: List[Tuple[Path, Dict[str, Any]]] = []
     targets: List[Tuple[Path, str]] = []
     round_file = round_path(root)
     if round_file.is_file():
@@ -2976,13 +3380,16 @@ def cmd_migrate_project(args: argparse.Namespace, root: Path) -> int:
         if manifest_file.is_file():
             targets.append((manifest_file, f".task/{directory.name}/manifest.json"))
     for path, rel in targets:
-        action, detail, found = upgrade_shared_file_schema(path, rel, DSH_WRITES_SCHEMA)
+        action, detail, found, converted = upgrade_shared_file_schema(
+            path, rel, DSH_WRITES_SCHEMA
+        )
         conversions.append({"file": rel, "action": action, "detail": detail})
         problems.extend(found)
+        if converted is not None:
+            pending.append((path, converted))
 
     lock["conversions"] = conversions
     if problems:
-        # 失败**绝不留下"成功标记 + 无法操作"的半迁移状态**：不提交 schema 契约。
         lock["status"] = "conversion_failed"
         write_json(lock_path(root), lock)
         write_migrate_report(root, lock)
@@ -2991,10 +3398,23 @@ def cmd_migrate_project(args: argparse.Namespace, root: Path) -> int:
             print(f"- {item['file']}: {item['action']} ({item['detail']})")
         for problem in problems:
             print(f"- {problem}")
-        print("NEXT 未更新 schema 契约；项目不会被判成回归。请按上面每条修正后重跑。")
+        print(
+            "NEXT 未改动任何共同文件、也未替换目标脚本；schema 契约未提交。"
+            "请按上面每条修正后重跑。"
+        )
         return 1
 
-    # 转换全部成功或无需转换 → 这时才提交项目的 schema 契约。
+    # ---- 第二步：预检全部通过，才开始提交 ----
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(source, destination)
+    task_root(root).mkdir(parents=True, exist_ok=True)
+    lock["status"] = "copied"
+    print(f"COPIED {dest_rel}")
+    print(f"MIGRATED {dest_rel} from multi-window-m-036 v{SKILL_VERSION}")
+
+    for path, converted in pending:
+        write_json(path, converted)
+
     # 顺序要紧：先把契约写进磁盘，再把内存里的 lock 写回（否则会把 schema_version 抹掉）。
     ensure_contract_schema(root)
     lock["status"] = "converted"
@@ -3510,7 +3930,26 @@ def cmd_transition(args: argparse.Namespace, root: Path) -> int:
         return 1
 
     reason = args.reason or f"transition {current} -> {target}"
+    # 硬停保护：第三次同根因失败之后，普通换人/转换不得恢复施工（Codex 审阅问题 2）。
+    if hard_stop_active(manifest) and hard_stop_blocks(target):
+        if not getattr(args, "adjudicate_hard_stop", False) or not str(args.reason or "").strip():
+            print("RESULT FAIL")
+            print(f"- {hard_stop_refusal(args.task_id, target)}")
+            return 1
+        manifest["hard_stop_adjudications"] = manifest.get("hard_stop_adjudications", [])
+        manifest["hard_stop_adjudications"].append(
+            {"at": now_iso(), "by": args.actor, "reason": args.reason}
+        )
+        record_status(manifest, target, args.actor, f"hard-stop adjudicated: {args.reason}")
+        # 裁决后恢复施工 = 新的修复轮：本轮的硬停已结束，再出现同样错误算新失败。
+        advance_repair_cycle(manifest)
+        write_json(task_dir(root, args.task_id) / "manifest.json", manifest)
+        print(f"HARD_STOP_ADJUDICATED {args.task_id} by {args.actor}: {args.reason}")
+        print(f"STATUS_CHANGED {args.task_id}: {current} -> {target} by {args.actor}")
+        return 0
     record_status(manifest, target, args.actor, reason)
+    if target == "in_progress":
+        advance_repair_cycle(manifest)
     write_json(task_dir(root, args.task_id) / "manifest.json", manifest)
     print(f"STATUS_CHANGED {args.task_id}: {current} -> {target} by {args.actor}")
     return 0
@@ -3735,6 +4174,11 @@ def cmd_reassign(args: argparse.Namespace, root: Path) -> int:
         print(f"REASSIGN_FAIL: new owner must be M1-M10 or Cn, got {new_owner!r}")
         return 1
     previous = str(manifest.get("owner") or "")
+    # 硬停保护：普通换人不得恢复施工（Codex 审阅问题 2，已实测复现）。
+    if hard_stop_active(manifest) and not getattr(args, "adjudicate_hard_stop", False):
+        print("REASSIGN_FAIL")
+        print(f"- {hard_stop_refusal(args.task_id, 'in_progress')}")
+        return 1
     if new_owner == previous:
         # 方向文件 §6.1：同负责人**可以确认已有交接**（幂等），但不算满足第二次真换人。
         if handoff_already_recorded(manifest, new_owner):
@@ -3783,7 +4227,16 @@ def cmd_reassign(args: argparse.Namespace, root: Path) -> int:
         )
     manifest["reassign_required"] = False
     manifest["reassigned_at"] = now_iso()
+    adjudicated = hard_stop_active(manifest) and getattr(args, "adjudicate_hard_stop", False)
     record_status(manifest, "in_progress", args.actor, args.reason or "reassigned")
+    if adjudicated:
+        # 明确裁决解除硬停：留痕并推进修复轮次（此后同样错误算新的失败）。
+        manifest["hard_stop_adjudications"] = manifest.get("hard_stop_adjudications", [])
+        manifest["hard_stop_adjudications"].append(
+            {"at": now_iso(), "by": args.actor, "reason": args.reason, "via": "reassign"}
+        )
+        manifest["hard_stop"] = False
+    advance_repair_cycle(manifest)
     write_json(task_dir(root, args.task_id) / "manifest.json", manifest)
     if round_data is not None:
         tasks = round_data.get("tasks")
@@ -4031,12 +4484,13 @@ def cmd_brief(
         print(f"BRIEF_FAIL: {exc}")
         return 1
     policy = verification_policy(manifest)
-    # 派工点：首次为 worker 出简报时落基线（工具自动做，M1 不需要额外命令）。
+    # 正式派工点：需求已就绪时**自动**建立基线（工具做，M1 不需要额外命令）。
+    # 建立失败必须**显式失败**，不能静默吞掉后继续派工（Codex 审阅问题 3）。
     if role == "worker":
-        try:
-            ensure_contract(root, args.task_id, manifest, "taskctl")
-        except OSError:
-            pass
+        _, contract_error = ensure_contract(root, args.task_id, manifest, "taskctl")
+        if contract_error:
+            print(f"BRIEF_FAIL: {contract_error}")
+            return 1
     owner = str(manifest.get("owner") or "")
     worker_window = task_worker_route(round_data, args.task_id) or owner
     assigned_verifier = task_verifier_route(round_data, args.task_id)
@@ -4511,7 +4965,16 @@ def build_parser() -> argparse.ArgumentParser:
 
     gate_parser = sub.add_parser("gate", help="run a task gate")
     gate_parser.add_argument("task_id")
-    gate_parser.add_argument("--basic", action="store_true", help="skip independent verification")
+    gate_parser.add_argument(
+        "--basic",
+        action="store_true",
+        help="basic acceptance: check worker material only; do not re-run commands",
+    )
+    gate_parser.add_argument(
+        "--dispatch",
+        action="store_true",
+        help="dispatch point: require ready requirements and (re)build the contract baseline",
+    )
 
     sub.add_parser("audit-round", help="audit the current round if check_requested")
     sub.add_parser("audit", help="alias for audit-round")
@@ -4586,6 +5049,11 @@ def build_parser() -> argparse.ArgumentParser:
     transition.add_argument("status", choices=sorted(TASK_STATES))
     transition.add_argument("--actor", choices=["M1", "worker", "verifier", "manual"], required=True)
     transition.add_argument("--reason")
+    transition.add_argument(
+        "--adjudicate-hard-stop",
+        action="store_true",
+        help="explicitly adjudicate an active hard stop (requires --reason with evidence)",
+    )
 
     reopen = sub.add_parser("reopen", help="reopen a task, count the block failure, increment attempt")
     reopen.add_argument("task_id")
@@ -4613,6 +5081,11 @@ def build_parser() -> argparse.ArgumentParser:
     reassign.add_argument("task_id")
     reassign.add_argument("--owner", required=True, help="new owning window (must differ from the current one)")
     reassign.add_argument("--reason", default="", help="why this owner can do better")
+    reassign.add_argument(
+        "--adjudicate-hard-stop",
+        action="store_true",
+        help="explicitly adjudicate an active hard stop; requires --reason with evidence",
+    )
     reassign.add_argument("--actor", choices=["M1"], default="M1")
     brief = sub.add_parser("brief", help="print a copy-ready task brief for a role")
     brief.add_argument("task_id")
@@ -4640,6 +5113,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="warn (never block) when an anchor can no longer be found in its file",
     )
     sub.add_parser("handoff", help="print an M1 succession brief from .task/")
+    adjudicate = sub.add_parser(
+        "adjudicate",
+        help="M1 records an explicit adjudication (currently: accept an acceptance-standard change)",
+    )
+    adjudicate.add_argument("task_id")
+    adjudicate.add_argument("kind", choices=["accept"], help="accept = accept the current standard change")
+    adjudicate.add_argument("--reason", required=True, help="evidence for accepting the change")
+    adjudicate.add_argument("--actor", choices=["M1"], default="M1")
     sub.add_parser("selftest", help="run bundled tests next to this script")
     return parser
 
@@ -4713,6 +5194,8 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
             return cmd_packet(args, root)
         if args.command == "handoff":
             return cmd_handoff(root)
+        if args.command == "adjudicate":
+            return cmd_adjudicate(args, root)
         if args.command == "selftest":
             return cmd_selftest()
     except ValueError as exc:

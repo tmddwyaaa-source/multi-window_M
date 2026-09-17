@@ -220,20 +220,42 @@ def main() -> int:
         json.dumps(unchanged, ensure_ascii=False)[:200],
     )
 
-    # ---------- A2. 回归方向：项目已声明 schema，却被旧宿主写出文件 ----------
-    # 模拟"0.34 创建的新轮"：锁已声明 1，但 round.json 缺版本标记。
+    # ---------- A2. 回归方向：项目里确有带标记的文件，却被旧宿主写出无标记文件 ----------
+    # 判据（0.36 修正后）：**磁盘上存在带版本标记的共同文件**时，缺标记的
+    # 已开工任务/已派本轮 = 被旧宿主改写。项目里一个带标记的文件都没有时不算回归
+    # （那只是刚 init 过，见 A2c）。
     regress = new_root("regress")
     seed_task(regress, status="pending")
     seed_round(regress)
     write_json(regress / ".task" / "skill-lock.json", {"schema_version": 1, "skill_version": "0.36"})
+    # 磁盘高水位：让 TASK-001 带上标记（合法），再让 round.json 缺标记（回归证据）
+    regress_manifest = regress / ".task" / "TASK-001" / "manifest.json"
+    regress_manifest_data = read_json(regress_manifest)
+    regress_manifest_data["schema_version"] = 1
+    regress_manifest_data["status"] = "in_progress"
+    write_json(regress_manifest, regress_manifest_data)
     regress_round = regress / ".task" / "round.json"
     regress_data = read_json(regress_round)
     regress_data.pop("schema_version", None)
     write_json(regress_round, regress_data)
-    code, out = run(["--root", str(regress), "transition", "TASK-001", "in_progress", "--actor", "M1"])
+    code, out = run(["--root", str(regress), "transition", "TASK-001", "worker_done", "--actor", "worker"])
     expect(
         "A2-neg-active-round-without-version-blocks-write",
         code == 1 and "SCHEMA_REGRESSION_RISK" in out,
+        f"code={code} out={out}",
+    )
+    # A2c：项目里一个带标记的文件都没有时，不判回归（避免把刚 init 的项目拦死）
+    fresh_project = new_root("freshregress")
+    seed_task(fresh_project, status="pending")
+    fresh_round = seed_round(fresh_project)
+    for path in (fresh_round, fresh_project / ".task" / "TASK-001" / "manifest.json"):
+        fresh_data = read_json(path)
+        fresh_data.pop("schema_version", None)
+        write_json(path, fresh_data)
+    code, out = run(["--root", str(fresh_project), "transition", "TASK-001", "in_progress", "--actor", "M1"])
+    expect(
+        "A2c-pos-no-versioned-file-means-no-regression",
+        code == 0 and "SCHEMA_REGRESSION_RISK" not in out,
         f"code={code} out={out}",
     )
     # 只读仍然可用
@@ -243,16 +265,19 @@ def main() -> int:
         run(["--root", str(regress), "status"])[1],
     )
 
-    # 任务目录缺版本标记也要被拦住
+    # A2b：**已开工**任务缺版本标记，而项目里确有带标记的文件 → 判回归
+    # （顺序要真实：先开工拿到标记，再模拟旧宿主把它改写成无标记的文件）
     regress2 = new_root("regress2")
     seed_task(regress2, status="pending")
     seed_round(regress2)
     write_json(regress2 / ".task" / "skill-lock.json", {"schema_version": 1, "skill_version": "0.36"})
+    code, out = run(["--root", str(regress2), "transition", "TASK-001", "in_progress", "--actor", "M1"])
+    expect("A2b-pre-transition-ok", code == 0, f"code={code} out={out}")
     regress2_manifest = regress2 / ".task" / "TASK-001" / "manifest.json"
     regress2_data = read_json(regress2_manifest)
-    regress2_data.pop("schema_version", None)
+    regress2_data.pop("schema_version", None)  # 旧宿主改写：不写版本标记
     write_json(regress2_manifest, regress2_data)
-    code, out = run(["--root", str(regress2), "transition", "TASK-001", "in_progress", "--actor", "M1"])
+    code, out = run(["--root", str(regress2), "transition", "TASK-001", "worker_done", "--actor", "worker"])
     expect(
         "A2-neg-task-without-version-blocks-write",
         code == 1 and "SCHEMA_REGRESSION_RISK" in out,
