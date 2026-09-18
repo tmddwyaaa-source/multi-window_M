@@ -197,6 +197,8 @@ def P4():
     wj(root / ".task" / "TASK-001" / "verify-report.json", {
         "task_id": "TASK-001", "reviewer": "C1", "result": "pass",
         "checked_requirements": ["R1"], "missing": [], "contract_key": key,
+        # rev3 Q2'：必须有**针对本次变化**的独立审查结论，功能 result 不能代替它
+        "standard_verdict": "stricter",
     })
     code, out = run(["adjudicate", "TASK-001", "accept", "--reason", "验收者已复核本次变化"], root)
     check("P4e M1 显式接受成功", code == 0 and "ACCEPTANCE_ACCEPTED" in out, f"code={code} out={out[:250]}")

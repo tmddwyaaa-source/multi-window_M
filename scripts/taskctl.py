@@ -505,14 +505,21 @@ def repair_cycle(manifest: Dict[str, Any]) -> int:
 
 
 def advance_repair_cycle(manifest: Dict[str, Any]) -> int:
-    """**结束**当前修复轮次（开始施工、收到失败、裁决解除硬停时各调用一次）。
+    """推进**修复轮次**。只在真实的施工/重新交付事件上调用：
 
-    职责单一：只负责 +1。调用点自己保证不会重复调用——不要在这里做
-    "当前是不是 in_progress" 的幂等判断：失败提交那一刻 status 还是
-    `in_progress`，那种判据会让计数静默失效。
+    - `transition` 进入 `in_progress`（重新开始施工）；
+    - `transition` 进入 `worker_done`（工人重新交付）；
+    - 硬停被显式裁决解除并恢复施工。
+
+    查看、出简报、重复传话、同负责人确认交接都**不**推进轮次。
     """
     manifest["repair_cycle"] = repair_cycle(manifest) + 1
     return manifest["repair_cycle"]
+
+
+def work_event_advances_cycle(target: str) -> bool:
+    """哪些状态代表"期间发生过施工/交付"——这些转换才推进轮次。"""
+    return target in {"in_progress", "worker_done"}
 
 
 def hard_stop_active(manifest: Dict[str, Any]) -> bool:
@@ -577,26 +584,19 @@ def last_failure_entry(block: Any) -> Optional[Dict[str, Any]]:
 
 
 def effective_failure_cycle(manifest: Dict[str, Any], block: Any) -> int:
-    """这次失败算第几轮修复 —— 用**状态是否变过**判定，而不是只看命令。
+    """这次失败属于第几轮修复 —— 读**显式、单调**的轮次记录。
 
-    规则：若当前状态与"上一次失败留下的状态"**相同**，说明期间没有任何事情发生
-    （同一份报告的重复提交 / 换一种说法的补充说明）→ 仍属同一轮，只记补充说明。
-    若状态**变了**，说明期间有人重新施工或重新交付 → 这是一次**新的失败**。
-
-    这样同时满足两件事（Codex rev2 Q3 与既有的三次梯级契约）：
-      - 同一轮里换措辞重复提交不会重复计数；
-      - "修复一轮之后又失败"（无论通过 `transition in_progress` 还是重新交付）
-        仍然是新的失败，梯级照常推进。
+    Codex rev3 Q3' 要求：不能用"最终状态值相同/不同"当主判据——那只反映当前值，
+    不反映期间发生过什么；而且会**忽略已经记录的新轮次**。
+    所以轮次由**真实的施工/重新交付事件**推进（见 `advance_repair_cycle` 的调用点：
+    进入 `in_progress`、重新交付 `worker_done`、硬停裁决解除），
+    这里只做单调回退保护：不得低于最近一次失败记录的轮次。
     """
+    current = repair_cycle(manifest)
     last = last_failure_entry(block)
     if last is None:
-        return repair_cycle(manifest)
-    current_status = str(manifest.get("status") or "")
-    status_after = str(last.get("status_after") or "")
-    base = max(0, int(last.get("repair_cycle", 0) or 0))
-    if status_after and current_status == status_after:
-        return base
-    return base + 1
+        return current
+    return max(current, max(0, int(last.get("repair_cycle", 0) or 0)))
 def failure_event_id(block_id: str, owner: str, cycle: int) -> str:
     """**一次失败事件**的身份 = 修复轮次 + 卡点 + 负责人。
 
@@ -1856,6 +1856,17 @@ def ensure_contract(
     path = contract_path(root, task_id)
     if path.is_file():
         return path, ""
+    # **不得用当前标准重建丢失的基线**（Codex rev3 Q4'）：只要 manifest 里已经记录过
+    # "这个任务建立过基线"，文件就不见了 = 基线丢失，必须报错；只有**首次**合法派工
+    # 才允许创建。恢复只能从可信来源取回原始基线，或走明确审查。
+    marker = manifest.get("contract_baseline")
+    if isinstance(marker, dict) and marker.get("hash"):
+        return None, (
+            f"ACCEPTANCE_BASELINE_LOST: {task_id} 曾建立派工基线"
+            f"（记录于 manifest.contract_baseline，hash={marker.get('hash')}），"
+            "但 contract.json 现在不存在。**拒绝用当前标准重建**——"
+            "请从可信备份恢复原始基线，或按明确审查处理。"
+        )
     if not contract_ready(manifest):
         return None, ""
     try:
@@ -2032,57 +2043,87 @@ def verifier_judgment_evidence(
 ) -> Tuple[Optional[Dict[str, Any]], str]:
     """检查"验收者是否**针对当前这次变化**作过判断"。
 
-    Codex rev2 Q2 要求：不能以 M1 自己写"已复核"代替验收者的实际审查；
-    **旧 pass 报告不能自动覆盖新变化**。判据必须是机械可查的：
+    Codex rev3 Q2' 的三条要求（全部机械可查）：
 
-    - `verify-report.json` 存在，且 `reviewer` **不是** owner/worker；
-    - 且满足下面任一：报告里 `contract_key` 等于当前变化指纹（明确针对本次），
-      或报告文件比 manifest **更新**（即变化之后才复查的）。
+    1. **不用 mtime 兜底**——复制/重存/恢复都会改时间，不代表重新审查过原标准。
+       必须用 `contract_key` 明确绑定**当前变化指纹**。
+    2. 报告**归属与身份**必须正确：`task_id` 对应本任务、`reviewer` 是合法窗号、
+       与实现者分离；需要独立验收时还必须是被指派的 verifier。
+    3. 要有**针对本次变化的明确审查结论**（`standard_verdict`），而不是一个泛泛的 pass。
 
-    Returns (evidence, error)。不新增角色，也不要求用户操作——把必要说明放进
-    **已有的验收材料**即可。
+    报告的 `result`（功能验收结论）与本次变更审查是两件事：功能 fail 不能当完工，
+    变更接受也必须有自己的结论。`contract_key` 与差异由 `brief`/`packet` 自动给出。
     """
     path = task_dir(root, task_id) / "verify-report.json"
     if not path.is_file():
         return None, (
             "ADJUDICATE_NO_EVIDENCE: 没有 verify-report.json。"
             "需要独立审查的变化不能由 M1 自己声明「已复核」——请先由验收者"
-            "复查本次变化（可在报告里写 `contract_key`），再接受。"
+            "复查本次变化并在报告里写 `contract_key` 与 `standard_verdict`。"
         )
     try:
         report = read_json(path)
     except ValueError as exc:
         return None, f"ADJUDICATE_NO_EVIDENCE: verify-report.json 不可解析：{exc}"
-    reviewer = str(report.get("reviewer") or "")
-    owner = str(manifest.get("owner") or "")
-    if not reviewer or reviewer == owner:
+
+    report_task = str(report.get("task_id") or "")
+    if report_task != task_id:
         return None, (
-            f"ADJUDICATE_NO_EVIDENCE: verify-report.reviewer={reviewer!r} 不是独立验收者"
+            f"ADJUDICATE_WRONG_REPORT: verify-report.task_id={report_task!r} 不是本任务"
+            f"（{task_id!r}）——不接受归属错误的材料。"
+        )
+    reviewer = str(report.get("reviewer") or "")
+    if not valid_window(reviewer):
+        return None, (
+            f"ADJUDICATE_WRONG_REVIEWER: verify-report.reviewer={reviewer!r} 不是合法窗号"
+            "（M1-M10 或 Cn）——不接受身份不明的审查。"
+        )
+    owner = str(manifest.get("owner") or "")
+    if reviewer == owner:
+        return None, (
+            f"ADJUDICATE_NO_EVIDENCE: verify-report.reviewer={reviewer!r} 就是实现者"
             f"（owner={owner!r}）；实现者不能自己审查自己的标准变化。"
         )
-    report_key = str(report.get("contract_key") or "")
-    if report_key and report_key != key:
-        return None, (
-            f"ADJUDICATE_STALE_EVIDENCE: 验收报告的 contract_key={report_key} 与当前变化"
-            f"（{key}）不一致——旧报告不能覆盖新变化，请重新审查本次变化。"
-        )
-    if not report_key:
+    # 需要独立验收时，审查者必须是被指派的那一位（复用既有路由规则）
+    policy = verification_policy(manifest)
+    if policy["independent_verification"]:
         try:
-            if path.stat().st_mtime <= (task_dir(root, task_id) / "manifest.json").stat().st_mtime:
-                return None, (
-                    "ADJUDICATE_STALE_EVIDENCE: 验收报告没有 `contract_key`，"
-                    "且不比 manifest 新——无法证明它审查的是**本次**变化。"
-                    "请在报告里写 `contract_key`（本值见下）或重新复查后再接受。"
-                )
-        except OSError as exc:
-            return None, f"ADJUDICATE_NO_EVIDENCE: 无法比较文件时间：{exc}"
+            round_data = load_round(root)
+        except ValueError:
+            round_data = None
+        assigned = task_verifier_route(round_data, task_id)
+        if assigned and reviewer != assigned:
+            return None, (
+                f"ADJUDICATE_WRONG_REVIEWER: reviewer={reviewer!r} 不是本轮指派的 verifier"
+                f"（{assigned!r}）——验收路由必须一致。"
+            )
+
+    report_key = str(report.get("contract_key") or "")
+    if not report_key:
+        return None, (
+            "ADJUDICATE_NO_EVIDENCE: 报告没有 `contract_key`，无法证明它审查的是**本次**变化"
+            "（不接受按文件时间推定）。请在报告里写 `contract_key`（本值见下）与 "
+            "`standard_verdict`。"
+        )
+    if report_key != key:
+        return None, (
+            f"ADJUDICATE_STALE_EVIDENCE: 报告的 contract_key={report_key} 与当前变化"
+            f"（{key}）不一致——旧报告不覆盖新变化，请重新审查本次变化。"
+        )
+    verdict = str(report.get("standard_verdict") or "").strip().lower()
+    if verdict not in {"equivalent", "stricter", "accepted"}:
+        return None, (
+            f"ADJUDICATE_NO_VERDICT: 报告缺少针对本次变化的明确审查结论"
+            f"（`standard_verdict` 需为 equivalent / stricter / accepted，当前={verdict!r}）。"
+            "功能验收的 result 不能代替变更审查结论。"
+        )
     evidence = {
         "reviewer": reviewer,
         "report": normalized_path(f".task/{task_id}/verify-report.json"),
         "report_hash": sha256_file(path),
-        "report_at": str(report.get("at") or ""),
-        "contract_key": report_key or "(按 mtime 判定为变化之后复查)",
-        "result": str(report.get("result") or ""),
+        "contract_key": report_key,
+        "standard_verdict": verdict,
+        "functional_result": str(report.get("result") or ""),
     }
     return evidence, ""
 
@@ -3641,33 +3682,47 @@ def cmd_migrate_project(args: argparse.Namespace, root: Path) -> int:
         return 1
 
     # ---- 第二步：预检全部通过，才开始提交 ----
-    # Codex rev2 §6 要求：提交阶段也可能中途 I/O 失败，所以**先记录每个将被改写
-    # 文件的原始字节**，失败时原样回滚（含目标脚本）。这样"不半迁移"才是被证明的，
-    # 而不是只证明了"输入预检失败不部分改写"。
-    restore: List[Tuple[Path, bytes]] = []
-    try:
-        restore.append((destination, destination.read_bytes() if dest_existed else b""))
-        for path, _ in pending:
-            restore.append((path, path.read_bytes()))
-    except OSError as exc:
-        print(f"MIGRATE_FAIL: 无法读取待改写文件的原始内容，已中止（未做任何修改）：{exc}")
-        return 1
+    # Codex rev2 §6 / rev3 补充要求：提交阶段可能中途 I/O 失败，所以先记录**每个会被
+    # 改写的文件**的原始状态，失败时原样回滚。三处细节按 rev3 修正：
+    #   1) 用 (原本是否存在, 原始字节) 区分"原来不存在"与"原来是空文件"——
+    #      只按字节真假判断会把空的既有文件删掉；
+    #   2) 回滚清单必须覆盖**所有影响兼容性/迁移结论的写入**，包括
+    #      `.task/skill-lock.json` 与迁移报告，而不只是共同文件和目标脚本；
+    #   3) 恢复失败要**明确列出**，不宣称全部恢复。
+    write_targets: List[Path] = [destination, lock_path(root), root / MIGRATE_REPORT_REL]
+    write_targets.extend(path for path, _ in pending)
+    snapshot: List[Tuple[Path, bool, bytes]] = []
+    for path in write_targets:
+        try:
+            if path.is_file():
+                snapshot.append((path, True, path.read_bytes()))
+            else:
+                snapshot.append((path, False, b""))
+        except OSError as exc:
+            print(f"MIGRATE_FAIL: 无法读取 {path} 的原始内容，已中止（未做任何修改）：{exc}")
+            return 1
 
     def _rollback(reason: str) -> None:
         restored: List[str] = []
-        for path, original in restore:
+        failed: List[str] = []
+        for path, existed, original in snapshot:
+            rel = normalized_path(str(path.relative_to(root)))
             try:
-                if original:
+                if existed:
+                    path.parent.mkdir(parents=True, exist_ok=True)
                     path.write_bytes(original)
-                    restored.append(normalized_path(str(path.relative_to(root))))
+                    restored.append(rel)
                 elif path.exists():
                     path.unlink()
-                    restored.append(normalized_path(str(path.relative_to(root))) + "(removed)")
-            except OSError:
-                continue
+                    restored.append(rel + "(removed)")
+            except OSError as exc:
+                failed.append(f"{rel}: {exc}")
         print(f"MIGRATE_COMMIT_FAILED: {reason}")
         print(f"- 已回滚: {', '.join(restored) if restored else '(无可回滚项)'}")
-        print("- 共同文件与目标脚本保持迁移前状态；schema 契约未提交。")
+        if failed:
+            print("- **恢复失败（需人工处理）**: " + "; ".join(failed))
+        else:
+            print("- 目标脚本、共同文件、版本锁与迁移报告均已回到迁移前状态。")
 
     try:
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -4216,7 +4271,9 @@ def cmd_transition(args: argparse.Namespace, root: Path) -> int:
         print(f"STATUS_CHANGED {args.task_id}: {current} -> {target} by {args.actor}")
         return 0
     record_status(manifest, target, args.actor, reason)
-    if target == "in_progress":
+    # 只有"真实发生过施工/交付"的转换才推进修复轮次（Codex rev3 Q3'）：
+    # 进入 in_progress = 重新施工；进入 worker_done = 重新交付。
+    if work_event_advances_cycle(target):
         advance_repair_cycle(manifest)
     write_json(task_dir(root, args.task_id) / "manifest.json", manifest)
     print(f"STATUS_CHANGED {args.task_id}: {current} -> {target} by {args.actor}")
@@ -4859,6 +4916,24 @@ def cmd_brief(
     write(f"- 收口路径: {close_path_label(policy)}")
     if policy.get("conflict"):
         write(f"- POLICY_CONFLICT: {policy['conflict']}")
+    # 验收者专用：把**当前标准变化**及其指纹直接给出，验收 agent 照抄进报告即可。
+    # 这样"接受标准变化"不再需要用户或 M1 手工查字段（Codex rev3 Q2'）。
+    if role == "verifier":
+        diffs, _ = contract_diffs(root, args.task_id, manifest)
+        if diffs:
+            write("")
+            write("## 标准变化审查（本任务是变更后的标准）")
+            write(f"- 变化指纹 contract_key: `{acceptance_key(diffs)}`")
+            write(f"- 与原标准的差异: {describe_diffs(diffs)}")
+            write(
+                "- 请在 `verify-report.json` 里写："
+                f"`\"contract_key\": \"{acceptance_key(diffs)}\"` 与 "
+                "`\"standard_verdict\": \"equivalent\"|\"stricter\"|\"accepted\"`"
+            )
+            write(
+                "- `standard_verdict` 是**针对本次变化**的独立结论；"
+                "功能验收的 `result` 不能代替它。未写这两项时 M1 无法接受该变化。"
+            )
     write()
     write("## allowed_paths")
     write("\n".join(allowed_lines))

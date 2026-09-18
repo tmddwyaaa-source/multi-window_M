@@ -1,4 +1,23 @@
-"""v0.33: same-block retry ladder keeps an auditable owner handoff."""
+"""v0.33: same-block retry ladder keeps an auditable owner handoff.
+
+0.36 修订说明（DSH 侧修改共享契约测试夹具，已公开、待 Codex 复核）：
+
+- 规则层面（双方已确认）：**失败事件的唯一身份 = 修复轮次 + 卡点 + 负责人**，
+  `reason` 只是解释材料。轮次由**真实的施工/重新交付事件**推进
+  （进入 `in_progress`、重新交付 `worker_done`、硬停裁决解除）。
+  同一轮次内重复提交同一次失败只记补充说明，不增加计数。
+- 本文件原先在两处失败之间**直接改写 `manifest["status"] = "worker_done"`**，
+  绕过了 `transition`。那只是夹具在模拟"工人重新交付"，**不是生产设计要求**；
+  按新语义它不构成一次可识别的施工/交付事件，于是第二次失败会被正确地
+  判为"同一次失败的补充说明"。
+- 因此这里把两处直接改写改为**真实的 `transition`**：
+  第 2 次失败前 `reopened -> in_progress`（重新施工）；
+  第 3 次失败前 `worker_done`（重新交付，走 transition）。
+- **断言全部保留**：第二次失败要求换人（`REASSIGN_REQUIRED`、`blocked`、
+  `attempt == 2`、BLOCKERS 记录）、第三次失败硬停（`HARD_STOP`、
+  `block_history` 长度 3）、根因改名需证据、owner 交接与路由移动。
+  没有任何断言被削弱或删除。
+"""
 from __future__ import annotations
 
 import json
@@ -97,8 +116,8 @@ def main() -> int:
         out,
     )
 
-    manifest["status"] = "worker_done"
-    save_manifest(root, manifest)
+    # 夹具模拟"原负责人重新施工"：按 0.36 语义必须走真实 transition（见文件头说明）。
+    run(["transition", "TASK-001", "in_progress", "--actor", "M1"], root)
     code, out = run(
         ["reopen", "TASK-001", "--block-id", "BLOCK-OTHER", "--reason", "renamed", "--actor", "M1"],
         root,
@@ -142,8 +161,8 @@ def main() -> int:
         out,
     )
 
-    manifest["status"] = "worker_done"
-    save_manifest(root, manifest)
+    # 夹具模拟"工人重新交付"：同样走真实 transition（见文件头说明）。
+    run(["transition", "TASK-001", "worker_done", "--actor", "worker"], root)
     code, out = run(
         ["reopen", "TASK-001", "--block-id", "BLOCK-UI", "--reason", "third fail", "--actor", "M1"],
         root,

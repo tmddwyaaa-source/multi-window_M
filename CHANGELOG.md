@@ -2,6 +2,36 @@
 
 当前规则以 `SKILL.md` 的 `version` 字段为准。本文件只作历史说明，**不得当作当前规则引用**。
 
+## 0.36-dsh rev3 — rev2 复核 4 条 + 迁移回滚（2026-09-18）
+
+Codex 复核 rev2 又发现 4 条缺陷与 1 处回滚缺口（我先逐条独立复现，**6/6 成立**）。全部修正。
+
+| # | 缺陷 | 修法 |
+|---|---|---|
+| 1 | **丢失的基线可被 `brief` 用当前标准重建**：新版派工后删除 `contract.json`，`gate` 会报 LOST，但 `brief` 仍按当前标准重建基线并把新哈希写回 manifest → 原标准被悄然替换 | `ensure_contract()` 先看 manifest 是否**记录过**建立基线（`contract_baseline` 标记）；有记录而文件丢失 → 报 `ACCEPTANCE_BASELINE_LOST`，**拒绝自动创建**。只有**首次**合法派工才创建 |
+| 2 | **接受依据太弱**：`mtime` 兜底不能证明审查针对当前变化；且归属/身份错误的报告（`task_id` 不对、`reviewer` 不是合法窗号、`result=fail`）只要 key 匹配也被接受 | **取消 mtime 兜底**，必须用 `contract_key` 绑定当前变化指纹；并校验报告**归属**（`task_id` 对应本任务）、**合法窗号**（`valid_window`）、**与实现者分离**、**验收路由一致**（需要独立验收时 reviewer 须为本轮指派 verifier）；还要求**针对本次变化的独立结论** `standard_verdict ∈ {equivalent, stricter, accepted}`——功能 `result` 不能代替变更审查结论。该值与差异由 **verifier 的 `brief`/`packet` 自动给出**，验收 agent 照抄，用户不需要知道字段名 |
+| 3 | **轮次判据忽略已记录的新轮次**：用"最终状态值相同/不同"判断，`manifest.repair_cycle=2` 而上次失败 `repair_cycle=1` 时会算回 1 | 回到**显式、单调**的轮次记录：轮次只在**真实施工/交付事件**上推进（`transition` 进入 `in_progress`、重新交付 `worker_done`、硬停裁决解除）。判据只做单调回退保护 |
+| 4 | **迁移回滚清单不完整 + 空文件语义错误**：不含 `skill-lock.json` 等契约写入；`b''` 被当成"原来不存在"，会把**空的既有文件删掉**；恢复失败被忽略后仍宣称已恢复 | 快照改为 `(原本是否存在, 原始字节)`；回滚清单覆盖**目标脚本 + 共同文件 + `skill-lock.json` + 迁移报告**；恢复失败**逐条列出**，不再宣称全部恢复 |
+
+### 共享契约测试的修订（公开说明，待 Codex 复核）
+
+`scripts/test_retry_ladder.py` 是**跨宿主共享**的契约测试。本次按 Codex 在 rev3 复核中的明确意见修改了它，
+理由写在文件头部：
+
+- 它原先在两处失败之间**直接改写 `manifest["status"] = "worker_done"`**，绕过 `transition`。
+  那只是夹具在模拟"工人重新交付"，**不是生产设计要求**；在"轮次由真实施工/交付事件推进"的规则下，
+  它不构成可识别的交付事件，于是第二次失败会被判为同一次失败的补充说明。
+- 改法：把两处直接改写换成**真实的 `transition`**（`reopened -> in_progress` 重新施工；
+  `worker_done` 重新交付）。
+- **断言全部保留**，没有任何一条被削弱或删除：第二次失败要求换人（`REASSIGN_REQUIRED`、`blocked`、
+  `attempt == 2`、BLOCKERS 记录）、第三次硬停（`HARD_STOP`、`block_history` 长度 3）、
+  根因改名需证据、owner 交接与路由移动。结果 **5/5 通过**。
+
+### 回归
+
+`selftest` **18/18**（含上述共享契约测试）；`review_probes_dsh.py` / `rev2_gap_probes.py` /
+`rev3_gap_probes.py` 三套探针全部退出码 0；`multi-window-m-035` 未动；0.36 仍未安装。
+
 ## 0.36-dsh rev2 — 独立复审 4 条的补修（2026-09-18）
 
 Codex 对 rev1 的独立复审又发现 4 条缺陷（我先逐条独立复现，**4/4 成立**），另有 2 条交付说明问题。全部修正。
