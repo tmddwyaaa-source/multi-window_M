@@ -120,6 +120,8 @@ UNREPLAYABLE_COMMAND = "UNREPLAYABLE_COMMAND"
 # 同一次失败/交接被重复提交时不再重复计数、不重复写历史（方向文件 §6.1：
 # 「一次真实失败计一次；重复处理同一次失败/交接不重复增加计数或历史」）。
 DUPLICATE_EVENT = "DUPLICATE_EVENT"
+# 同一修复轮次/卡点/负责人的再次提交 = 同一次失败的补充说明（不增加计数）。
+FAILURE_SUPPLEMENTED = "FAILURE_SUPPLEMENTED"
 # 结构错误：必需命令字段缺失或拼错，导致证据无法解释（方向文件 §3「结构错误」）。
 # 要点：指出文件、条目、字段和正确写法，**不能静默跳过**；合法可选元数据不拒。
 UNKNOWN_FIELD = "UNKNOWN_FIELD"
@@ -567,18 +569,53 @@ def is_legacy_unscoped(manifest: Dict[str, Any]) -> bool:
     return not (isinstance(block, dict) and block.get("block_id"))
 
 
-def failure_event_id(block_id: str, owner: str, reason: str, cycle: int) -> str:
-    """**一次失败事件**的身份 = 修复轮次 + 卡点 + 负责人 + 原因。
+def last_failure_entry(block: Any) -> Optional[Dict[str, Any]]:
+    for item in reversed(block_history_entries(block)):
+        if isinstance(item, dict) and item.get("failure_id"):
+            return item
+    return None
 
-    关键在 `cycle`（修复轮次）：**自由文字不是事件身份**。
-    修复一轮之后再次出现同样的错误文字，是**新的失败**，必须计数；
-    只有在**同一修复轮内**、同卡点、同负责人、同原因被重复提交，
-    才视为"同一次失败被重复处理"（Codex 审阅问题 1）。
+
+def effective_failure_cycle(manifest: Dict[str, Any], block: Any) -> int:
+    """这次失败算第几轮修复 —— 用**状态是否变过**判定，而不是只看命令。
+
+    规则：若当前状态与"上一次失败留下的状态"**相同**，说明期间没有任何事情发生
+    （同一份报告的重复提交 / 换一种说法的补充说明）→ 仍属同一轮，只记补充说明。
+    若状态**变了**，说明期间有人重新施工或重新交付 → 这是一次**新的失败**。
+
+    这样同时满足两件事（Codex rev2 Q3 与既有的三次梯级契约）：
+      - 同一轮里换措辞重复提交不会重复计数；
+      - "修复一轮之后又失败"（无论通过 `transition in_progress` 还是重新交付）
+        仍然是新的失败，梯级照常推进。
     """
-    payload = "\n".join(
-        [str(cycle), str(block_id or ""), str(owner or ""), str(reason or "").strip()]
-    )
+    last = last_failure_entry(block)
+    if last is None:
+        return repair_cycle(manifest)
+    current_status = str(manifest.get("status") or "")
+    status_after = str(last.get("status_after") or "")
+    base = max(0, int(last.get("repair_cycle", 0) or 0))
+    if status_after and current_status == status_after:
+        return base
+    return base + 1
+def failure_event_id(block_id: str, owner: str, cycle: int) -> str:
+    """**一次失败事件**的身份 = 修复轮次 + 卡点 + 负责人。
+
+    **`reason` 不参与身份**（Codex rev2 Q3）：它是解释材料，不是事件身份。
+    - 同一修复轮次 + 同卡点 + 同负责人 = **同一次失败**：后续提交只作"补充说明"，
+      记录证据但**不增加计数**（所以"换一句话再说一遍"不会重复计数）；
+    - 修复一轮之后再出现同样错误 = **新的失败**（轮次变了），照常计数；
+    - 换根因请用不同的 `block_id`（既有规则），不要靠换措辞表示新失败。
+    """
+    payload = "\n".join([str(cycle), str(block_id or ""), str(owner or "")])
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+
+
+def failure_supplement_error(event_id: str) -> str:
+    return (
+        f"{FAILURE_SUPPLEMENTED}: 同一修复轮次、同一卡点、同一负责人的失败已记录过"
+        f"（事件 {event_id}）——本次仅作**补充说明**，不增加失败次数。"
+        "换根因请用不同的 --block-id；确实换了执行者请用 reassign。"
+    )
 
 
 def handoff_fingerprint(block_id: str, from_owner: str, to_owner: str, reason: str) -> str:
@@ -610,18 +647,20 @@ def bump_block_attempt(
     reason: str,
     owner: str,
     new_root: bool = False,
-) -> Tuple[Dict[str, Any], str]:
+) -> Tuple[Dict[str, Any], str, bool]:
     """记录**一次新的**卡点失败；同一 block_id 累加，改根因必须给证据。
 
-    去重按**失败事件**：同修复轮次 + 同卡点 + 同负责人 + 同原因才算"同一次处理"被重复提交。
-    上一轮修复之后再次出现同样错误是**新的失败**，照常计数（Codex 审阅问题 1）。
-    **换人不增加失败次数**，交接由 `assignment_history` 承载。
+    去重按**失败事件** = 修复轮次 + 卡点 + 负责人（**不含 reason**，Codex rev2 Q3）：
+    - 同一次失败再次提交 → 记补充说明、**不增加计数**，`supplemented=True`；
+    - 修复一轮之后再出现同样错误 → 新事件，照常计数；
+    - 换人不增加失败次数（交接由 `assignment_history` 承载）。
 
-    Returns (block_record, error). error 非空表示拒绝本次计数。
+    Returns (block_record, error, supplemented)。
+    `error` 非空且 `supplemented=False` 表示**拒绝本次计数**。
     """
     block_id = str(block_id or "").strip()
     if not block_id:
-        return {}, "block_id must be a non-empty id for the current root cause"
+        return {}, "block_id must be a non-empty id for the current root cause", False
     reason = str(reason or "").strip()
     block = manifest.get("block_attempts")
     known = block.get("block_id") if isinstance(block, dict) else None
@@ -630,10 +669,10 @@ def bump_block_attempt(
             f"BLOCK_ID_CHANGE_REQUIRES_EVIDENCE: block_id={block_id} differs from the current "
             f"block_id={known}; renaming a root cause does not reset the counter. "
             "Pass --new-root with acceptance evidence to declare a genuinely new root cause."
-        )
+        ), False
     if new_root:
         if not reason:
-            return {}, "--new-root requires an evidence-bearing --reason"
+            return {}, "--new-root requires an evidence-bearing --reason", False
         block = {"block_id": block_id, "attempts": 0, "history": []}
         history: List[Any] = []
         # 硬停属于**那一个根因**。换根因（带证据）意味着旧根因已处理，
@@ -647,18 +686,33 @@ def bump_block_attempt(
         if not isinstance(block, dict) or not block.get("block_id"):
             block = {"block_id": block_id, "attempts": 0, "history": []}
         history = block_history_entries(block)
-    cycle = repair_cycle(manifest)
-    event_id = failure_event_id(block_id, owner, reason, cycle)
-    if any(
-        isinstance(item, dict) and item.get("failure_id") == event_id for item in history
-    ):
-        return {}, duplicate_failure_error(block, event_id)
+    cycle = effective_failure_cycle(manifest, block)
+    event_id = failure_event_id(block_id, owner, cycle)
+    existing = next(
+        (
+            item
+            for item in history
+            if isinstance(item, dict) and item.get("failure_id") == event_id
+        ),
+        None,
+    )
+    if existing is not None:
+        # 同一次失败：**记录补充说明，但不增加计数**（reason 不是事件身份）。
+        supplements = existing.setdefault("supplements", [])
+        if not isinstance(supplements, list):
+            supplements = []
+            existing["supplements"] = supplements
+        if reason:
+            supplements.append({"at": now_iso(), "reason": reason})
+        block.update({"block_id": block_id, "attempts": block.get("attempts", 0), "history": history})
+        manifest["block_history"] = history
+        return block, failure_supplement_error(event_id), True
     attempts = max(0, int(block.get("attempts", 0) or 0)) + 1
     if attempts > MAX_BLOCK_ATTEMPTS:
         return {}, (
             f"卡点上限 {MAX_BLOCK_ATTEMPTS} 次已到（block_id={block_id}）："
             "禁止继续对同一根因盲改；写 docs/BLOCKERS/ 升级报告并点名下一步。"
-        )
+        ), False
     history.append(
         {
             "attempt": attempts,
@@ -668,12 +722,15 @@ def bump_block_attempt(
             "at": now_iso(),
             "owner": owner or manifest.get("owner") or "?",
             "reason": reason,
+            # 记录"这次失败**之前**的状态"；失败处理结束后由调用方补 `status_after`。
+            # 下一条失败靠"当前状态 vs status_after"判断期间有没有发生新的事情。
+            "status_before": str(manifest.get("status") or ""),
         }
     )
     block.update({"block_id": block_id, "attempts": attempts, "history": history})
     # 与 Codex 版共用同一本账的兼容视图：block_history 是 history 的别名。
     manifest["block_history"] = history
-    return block, ""
+    return block, "", False
 
 
 def write_blocker_note(root: Path, task_id: str, block_id: str, attempts: int, reason: str) -> Path:
@@ -1669,6 +1726,95 @@ def contract_baseline(manifest: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def validate_dispatch_ready(
+    root: Path,
+    task_id: str,
+    manifest: Dict[str, Any],
+    round_data: Optional[Dict[str, Any]] = None,
+    *,
+    require_baseline: bool = True,
+    strict_routing: bool = True,
+) -> List[str]:
+    """**正式派工前提**的唯一实现（`gate --dispatch` 与 `brief`/`packet` 共用）。
+
+    Codex rev2 Q1 要求：默认派工应复用 worker brief/packet，由**同一套校验**决定
+    能不能派工；不能只给 `--dispatch` 补检查，而默认派工仍可跳过。
+
+    顺序（与 Codex 给的一致）：任务身份 → 需求 → **来源映射** → 边界 → 验证策略
+    → 本轮路由 → 通过后才允许保存基线 / 输出正式简报。
+
+    `strict_routing=False` 用于**恢复期重新出简报**：此时任务已经派工过，路由可能
+    正在调整（例如换人后 `round.tasks` 与 owner 短暂不一致）。路由问题降级为提示，
+    避免"因旧状态存在而永久禁止必要修复"——但**首次派工仍然严格**。
+    """
+    errors: List[str] = []
+    if not contract_ready(manifest):
+        errors.append(
+            f"DISPATCH_NOT_READY: {task_id} 的 requirements / allowed_paths "
+            "还没填完（或仍是模板占位文字），不能派工。"
+        )
+        return errors
+    # 身份、必需字段与边界
+    errors.extend(validate_manifest(manifest, task_id))
+    # **来源映射**：这是上一版漏掉的一环（Codex rev2 Q1 反例：source_refs=[] 仍通过）
+    errors.extend(validate_requirement_coverage(manifest, task_id))
+    # 验证策略
+    policy = verification_policy(manifest)
+    if policy["conflict"]:
+        errors.append(policy["conflict"])
+    # 本轮路由（owner / verifier）
+    if round_data is not None:
+        routing_errors = validate_assignments(
+            root,
+            round_data,
+            task_id,
+            manifest,
+            required=bool(policy["independent_verification"]),
+            worker_window=task_worker_route(round_data, task_id) or str(manifest.get("owner") or ""),
+        )
+        if routing_errors and not strict_routing:
+            for error in routing_errors:
+                print(f"NOTE 派工路由提示（恢复期不阻断）: {error}")
+        else:
+            errors.extend(routing_errors)
+    if errors:
+        return errors
+    if require_baseline:
+        _, boot_error = ensure_contract(root, task_id, manifest, "taskctl")
+        if boot_error:
+            errors.append(boot_error)
+            return errors
+        errors.extend(mark_baseline_created(root, task_id, manifest))
+    return errors
+
+
+def mark_baseline_created(root: Path, task_id: str, manifest: Dict[str, Any]) -> List[str]:
+    """在 manifest 里留一个**最小标记**："本项目已在新版派工过、当时有基线"。
+
+    Codex rev2 Q4 要求：不能用"文件现在不存在"推定"过去从未存在"——历史任务与
+    "新版已派工但基线丢失"必须区分开，否则缺失会被静默当成历史例外。
+    """
+    stored, status = load_contract(root, task_id)
+    if stored is None:
+        return []
+    baseline_hash = hashlib.sha256(
+        json.dumps(stored.get("baseline"), ensure_ascii=False, sort_keys=True).encode("utf-8")
+    ).hexdigest()[:16]
+    marker = manifest.get("contract_baseline")
+    if isinstance(marker, dict) and marker.get("hash") == baseline_hash:
+        return []
+    manifest["contract_baseline"] = {
+        "at": now_iso(),
+        "hash": baseline_hash,
+        "schema_version": DSH_WRITES_SCHEMA,
+    }
+    try:
+        write_json(task_dir(root, task_id) / "manifest.json", manifest)
+    except OSError as exc:
+        return [f"CONTRACT_BASELINE_MARK_FAILED: {task_id}: {exc}"]
+    return []
+
+
 def contract_ready(manifest: Dict[str, Any]) -> bool:
     """需求是否已填好、可以据此建立派工基线。
 
@@ -1821,26 +1967,40 @@ def validate_contract(
 ) -> List[str]:
     """标准变更：**提示变化，确认后才收口**（方向文件 §3「标准改变」）。
 
-    - 基线缺失/损坏：`required=True`（收口）时阻断，否则只提示；
-    - 有变化：给出**原需求文字与原标准**，要求 M1 明确接受；
-    - 已接受且与当前变化一致：放行，并把接受记录留在 `contract.json`。
+    基线的四种情形必须分开（Codex rev2 Q4）——不能用"文件现在不存在"推定
+    "过去从未存在"，也不能在收口时补当前快照冒充"原标准"：
+
+    | 情形 | 处理 |
+    |---|---|
+    | 可确认的历史任务（从未在新版派工过） | **只在收口时提示一次**，不阻断、不重复制造噪声 |
+    | 新版派工过（manifest 有 `contract_baseline` 标记）但基线消失 | **阻断**：恢复可信备份或按明确审查处理 |
+    | 基线损坏/结构不合法 | **阻断**并明确报错，不能当无变化 |
+    | 正常 | 照常对比 |
     """
     stored, status = load_contract(root, task_id)
     if status == "NO_BASELINE":
-        # 派工基线在**派工点**（`gate --dispatch` 或 M1 出 worker 简报）建立。
-        # 没有基线时**不阻断**：历史任务（在基线机制之前派工的）本来就没有，
-        # 不能因此永远收不了口。但必须把"没有对照物"这件事说出来，
-        # 不能让"已对照原标准"变成一个没有依据的声明。
-        print(
-            "ACCEPTANCE_BASELINE_MISSING: "
-            f"{task_id} 无派工基线（contract.json）；本次**未**对照原标准。"
-            f"要建立基线请在派工点跑 `gate {task_id} --dispatch`。"
-        )
+        marker = manifest.get("contract_baseline")
+        if isinstance(marker, dict) and marker.get("hash"):
+            # 新版派工过、当时有基线 → 现在没了，不能当历史例外。
+            return [
+                "ACCEPTANCE_BASELINE_LOST: "
+                f"{task_id} 在新版派工点建立过基线（记录于 manifest.contract_baseline，"
+                f"hash={marker.get('hash')}），但 contract.json 现在不存在。"
+                "不能把当前标准当成「原标准」重建；请恢复可信备份，"
+                "或按明确审查处理后再收口。"
+            ]
+        # 可确认的历史任务：只在收口时提示**一次**，不阻断、不每次 gate 都吵。
+        if required:
+            print(
+                "ACCEPTANCE_BASELINE_MISSING: "
+                f"{task_id} 是基线机制之前派工的历史任务，从未建立派工基线；"
+                "本次**未**对照派工原标准，按其余现有验收策略查收。"
+            )
         return []
     if status == "BASELINE_CORRUPT":
         return [
             f"ACCEPTANCE_BASELINE_CORRUPT: {task_id} 的 contract.json 缺失或结构不合法；"
-            "不能当作「没有变化」，请重建基线（不要在未核对的情况下覆盖）。"
+            "不能当作「没有变化」，请恢复可信基线（不要在未核对的情况下覆盖）。"
         ]
     diffs, _ = contract_diffs(root, task_id, manifest)
     if not diffs:
@@ -1867,8 +2027,73 @@ def validate_contract(
     ]
 
 
+def verifier_judgment_evidence(
+    root: Path, task_id: str, manifest: Dict[str, Any], key: str
+) -> Tuple[Optional[Dict[str, Any]], str]:
+    """检查"验收者是否**针对当前这次变化**作过判断"。
+
+    Codex rev2 Q2 要求：不能以 M1 自己写"已复核"代替验收者的实际审查；
+    **旧 pass 报告不能自动覆盖新变化**。判据必须是机械可查的：
+
+    - `verify-report.json` 存在，且 `reviewer` **不是** owner/worker；
+    - 且满足下面任一：报告里 `contract_key` 等于当前变化指纹（明确针对本次），
+      或报告文件比 manifest **更新**（即变化之后才复查的）。
+
+    Returns (evidence, error)。不新增角色，也不要求用户操作——把必要说明放进
+    **已有的验收材料**即可。
+    """
+    path = task_dir(root, task_id) / "verify-report.json"
+    if not path.is_file():
+        return None, (
+            "ADJUDICATE_NO_EVIDENCE: 没有 verify-report.json。"
+            "需要独立审查的变化不能由 M1 自己声明「已复核」——请先由验收者"
+            "复查本次变化（可在报告里写 `contract_key`），再接受。"
+        )
+    try:
+        report = read_json(path)
+    except ValueError as exc:
+        return None, f"ADJUDICATE_NO_EVIDENCE: verify-report.json 不可解析：{exc}"
+    reviewer = str(report.get("reviewer") or "")
+    owner = str(manifest.get("owner") or "")
+    if not reviewer or reviewer == owner:
+        return None, (
+            f"ADJUDICATE_NO_EVIDENCE: verify-report.reviewer={reviewer!r} 不是独立验收者"
+            f"（owner={owner!r}）；实现者不能自己审查自己的标准变化。"
+        )
+    report_key = str(report.get("contract_key") or "")
+    if report_key and report_key != key:
+        return None, (
+            f"ADJUDICATE_STALE_EVIDENCE: 验收报告的 contract_key={report_key} 与当前变化"
+            f"（{key}）不一致——旧报告不能覆盖新变化，请重新审查本次变化。"
+        )
+    if not report_key:
+        try:
+            if path.stat().st_mtime <= (task_dir(root, task_id) / "manifest.json").stat().st_mtime:
+                return None, (
+                    "ADJUDICATE_STALE_EVIDENCE: 验收报告没有 `contract_key`，"
+                    "且不比 manifest 新——无法证明它审查的是**本次**变化。"
+                    "请在报告里写 `contract_key`（本值见下）或重新复查后再接受。"
+                )
+        except OSError as exc:
+            return None, f"ADJUDICATE_NO_EVIDENCE: 无法比较文件时间：{exc}"
+    evidence = {
+        "reviewer": reviewer,
+        "report": normalized_path(f".task/{task_id}/verify-report.json"),
+        "report_hash": sha256_file(path),
+        "report_at": str(report.get("at") or ""),
+        "contract_key": report_key or "(按 mtime 判定为变化之后复查)",
+        "result": str(report.get("result") or ""),
+    }
+    return evidence, ""
+
+
 def cmd_adjudicate(args: argparse.Namespace, root: Path) -> int:
-    """M1 对"验收标准变更"的显式接受（不新增角色，只落一条可审计记录）。"""
+    """M1 对"验收标准变更"的显式接受（不新增角色，只落一条可审计记录）。
+
+    必须带**验收者的实际判断依据**：谁判的、依据哪份证据、针对哪次变化
+    （Codex rev2 Q2）。`--origin` 用来记录变化的来由（例如"用户新增需求"），
+    以便区分"放宽"与"需求变更"。
+    """
     if args.actor != "M1":
         print("ADJUDICATE_FAIL: requires actor=M1")
         return 1
@@ -1889,13 +2114,22 @@ def cmd_adjudicate(args: argparse.Namespace, root: Path) -> int:
     if not diffs:
         print("ADJUDICATE_NOOP: 当前没有标准变化可接受")
         return 0
+    key = acceptance_key(diffs)
+    evidence, evidence_error = verifier_judgment_evidence(root, args.task_id, manifest, key)
+    if evidence is None:
+        print(evidence_error)
+        print(f"- 当前变化指纹（请写进 verify-report.contract_key）: {key}")
+        print(f"- 当前变化: {describe_diffs(diffs)}")
+        return 1
     record = {
-        "key": acceptance_key(diffs),
+        "key": key,
         "at": now_iso(),
         "by": args.actor,
         "reason": args.reason,
+        "origin": str(getattr(args, "origin", "") or "unspecified"),
         "diffs": diffs,
         "original_requirements": (stored.get("baseline") or {}).get("requirements") or [],
+        "judgment": evidence,
     }
     stored.setdefault("accepted_changes", [])
     if not isinstance(stored["accepted_changes"], list):
@@ -1904,6 +2138,8 @@ def cmd_adjudicate(args: argparse.Namespace, root: Path) -> int:
     write_json(contract_path(root, args.task_id), stored)
     print(f"ACCEPTANCE_ACCEPTED {args.task_id} by {args.actor}")
     print(f"- 变化: {describe_diffs(diffs)}")
+    print(f"- 来由: {record['origin']}")
+    print(f"- 判断者: {evidence['reviewer']}（依据 {evidence['report']}）")
     print(f"- 理由: {args.reason}")
     return 0
 
@@ -2486,16 +2722,16 @@ def gate(
     if policy["conflict"]:
         return [policy["conflict"]]
     if phase == "dispatch":
-        # 派工点：需求必须已就绪，然后建立基线（工具动作，M1 不需要额外命令）。
-        if not contract_ready(manifest):
-            return [
-                "DISPATCH_NOT_READY: "
-                f"{task_id} 的 requirements / allowed_paths / source_refs 还没填完，"
-                "不能派工；填好后重跑 `gate <task> --dispatch`。"
-            ]
-        _, boot_error = ensure_contract(root, task_id, manifest, "taskctl")
-        if boot_error:
-            return [boot_error]
+        # 派工点：**与 brief/packet 共用同一套前提校验**（Codex rev2 Q1）。
+        # 校验不通过就既不能保存基线，也不能输出"已准备好"。
+        round_data: Optional[Dict[str, Any]] = None
+        try:
+            round_data = load_round(root)
+        except ValueError:
+            round_data = None
+        dispatch_errors = validate_dispatch_ready(root, task_id, manifest, round_data)
+        if dispatch_errors:
+            return dispatch_errors
         print(f"CONTRACT_BASELINE_READY {task_id}")
         return []
     errors.extend(validate_manifest(manifest, task_id))
@@ -3405,26 +3641,58 @@ def cmd_migrate_project(args: argparse.Namespace, root: Path) -> int:
         return 1
 
     # ---- 第二步：预检全部通过，才开始提交 ----
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(source, destination)
-    task_root(root).mkdir(parents=True, exist_ok=True)
-    lock["status"] = "copied"
-    print(f"COPIED {dest_rel}")
-    print(f"MIGRATED {dest_rel} from multi-window-m-036 v{SKILL_VERSION}")
+    # Codex rev2 §6 要求：提交阶段也可能中途 I/O 失败，所以**先记录每个将被改写
+    # 文件的原始字节**，失败时原样回滚（含目标脚本）。这样"不半迁移"才是被证明的，
+    # 而不是只证明了"输入预检失败不部分改写"。
+    restore: List[Tuple[Path, bytes]] = []
+    try:
+        restore.append((destination, destination.read_bytes() if dest_existed else b""))
+        for path, _ in pending:
+            restore.append((path, path.read_bytes()))
+    except OSError as exc:
+        print(f"MIGRATE_FAIL: 无法读取待改写文件的原始内容，已中止（未做任何修改）：{exc}")
+        return 1
 
-    for path, converted in pending:
-        write_json(path, converted)
+    def _rollback(reason: str) -> None:
+        restored: List[str] = []
+        for path, original in restore:
+            try:
+                if original:
+                    path.write_bytes(original)
+                    restored.append(normalized_path(str(path.relative_to(root))))
+                elif path.exists():
+                    path.unlink()
+                    restored.append(normalized_path(str(path.relative_to(root))) + "(removed)")
+            except OSError:
+                continue
+        print(f"MIGRATE_COMMIT_FAILED: {reason}")
+        print(f"- 已回滚: {', '.join(restored) if restored else '(无可回滚项)'}")
+        print("- 共同文件与目标脚本保持迁移前状态；schema 契约未提交。")
 
-    # 顺序要紧：先把契约写进磁盘，再把内存里的 lock 写回（否则会把 schema_version 抹掉）。
-    ensure_contract_schema(root)
-    lock["status"] = "converted"
-    if lock.get(SCHEMA_FIELD) is None:
-        try:
-            lock[SCHEMA_FIELD] = int(read_json(lock_path(root)).get(SCHEMA_FIELD))
-        except (ValueError, TypeError):
-            lock[SCHEMA_FIELD] = DSH_WRITES_SCHEMA
-    write_json(lock_path(root), lock)
-    write_migrate_report(root, lock)
+    try:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, destination)
+        task_root(root).mkdir(parents=True, exist_ok=True)
+        lock["status"] = "copied"
+        print(f"COPIED {dest_rel}")
+        print(f"MIGRATED {dest_rel} from multi-window-m-036 v{SKILL_VERSION}")
+
+        for path, converted in pending:
+            write_json(path, converted)
+
+        # 顺序要紧：先把契约写进磁盘，再把内存里的 lock 写回（否则会把 schema_version 抹掉）。
+        ensure_contract_schema(root)
+        lock["status"] = "converted"
+        if lock.get(SCHEMA_FIELD) is None:
+            try:
+                lock[SCHEMA_FIELD] = int(read_json(lock_path(root)).get(SCHEMA_FIELD))
+            except (ValueError, TypeError):
+                lock[SCHEMA_FIELD] = DSH_WRITES_SCHEMA
+        write_json(lock_path(root), lock)
+        write_migrate_report(root, lock)
+    except (OSError, ValueError) as exc:
+        _rollback(str(exc))
+        return 1
     changed = [item["file"] for item in conversions if item["action"] == "changed"]
     print(f"CONVERTED {len(changed)} file(s) to schema_version={DSH_WRITES_SCHEMA}")
     for item in conversions:
@@ -3957,23 +4225,29 @@ def cmd_transition(args: argparse.Namespace, root: Path) -> int:
 
 def _reopen_body(
     args: argparse.Namespace, root: Path, *, allow_worker_actor: bool = False
-) -> Tuple[Optional[Dict[str, Any]], str]:
+) -> Tuple[Optional[Dict[str, Any]], str, str]:
+    """Returns (manifest, error, notice)。`notice` 非空表示这是**补充说明**（不算失败）。"""
     # reopen（改状态）只有 M1 能做；attempt（记失败/交接，不改状态）由失败方记录。
     if args.actor != "M1" and not allow_worker_actor:
-        return None, "reopened requires actor=M1"
+        return None, "reopened requires actor=M1", ""
     manifest, errors = load_manifest(root, args.task_id)
     if manifest is None:
-        return None, "\n".join(errors)
+        return None, "\n".join(errors), ""
     owner = str(manifest.get("owner") or "?")
-    block, block_error = bump_block_attempt(
+    block, block_error, supplemented = bump_block_attempt(
         manifest,
         block_id=args.block_id,
         reason=args.reason,
         owner=owner,
         new_root=bool(getattr(args, "new_root", False)),
     )
-    if block_error:
-        return None, block_error
+    if block_error and not supplemented:
+        return None, block_error, ""
+    if supplemented:
+        # 同一次失败的补充说明：记证据、不改状态、不加计数。
+        manifest["block_attempts"] = block
+        write_json(task_dir(root, args.task_id) / "manifest.json", manifest)
+        return manifest, "", block_error
     manifest["block_attempts"] = block
     attempts = max(0, int(block.get("attempts", 0) or 0))
     # 第 2 次 fail：必须换真正不同的负责人，任务转为 blocked 并落卡点记录。
@@ -3990,15 +4264,19 @@ def _reopen_body(
         write_blocker_note(root, args.task_id, str(block.get("block_id")), attempts, args.reason)
     else:
         record_status(manifest, "reopened", args.actor, args.reason)
+    # 记下这次失败**留下的**状态：下一条失败靠它判断"期间有没有发生新的事情"。
+    last_failure = last_failure_entry(block)
+    if last_failure is not None:
+        last_failure["status_after"] = str(manifest.get("status") or "")
     manifest["attempt"] = int(manifest.get("attempt", 0) or 0) + 1
     manifest["reopen_reason"] = args.reason
     manifest["reopened_at"] = now_iso()
     write_json(task_dir(root, args.task_id) / "manifest.json", manifest)
-    return manifest, ""
+    return manifest, "", ""
 
 
 def cmd_reopen(args: argparse.Namespace, root: Path) -> int:
-    manifest, error = _reopen_body(args, root)
+    manifest, error, notice = _reopen_body(args, root)
     if manifest is None:
         print("RESULT FAIL")
         print(f"- {error}")
@@ -4092,7 +4370,7 @@ def cmd_attempt(args: argparse.Namespace, root: Path) -> int:
     if args.actor != target_actor:
         print(f"RESULT FAIL\n- role={role} requires actor={target_actor}")
         return 1
-    manifest, error = _reopen_body(args, root, allow_worker_actor=True)
+    manifest, error, notice = _reopen_body(args, root, allow_worker_actor=True)
     if manifest is None:
         print("RESULT FAIL")
         print(f"- {error}")
@@ -4102,6 +4380,15 @@ def cmd_attempt(args: argparse.Namespace, root: Path) -> int:
                 "换负责人请用 `reassign --owner <窗号>`；确实换了根因请用 `--new-root` 并给证据。"
             )
         return 1
+    if notice:
+        # 同一次失败的补充说明：已记录证据、未改变状态、未增加计数。
+        block = manifest.get("block_attempts") or {}
+        print(notice)
+        print(
+            f"ATTEMPT {args.task_id} block={block.get('block_id')} "
+            f"failures={block.get('attempts')}/{MAX_BLOCK_ATTEMPTS} （未增加）"
+        )
+        return 0
     new_owner = str(args.owner or "").strip()
     if new_owner and new_owner != str(manifest.get("owner") or ""):
         if not valid_window(new_owner):
@@ -4484,12 +4771,23 @@ def cmd_brief(
         print(f"BRIEF_FAIL: {exc}")
         return 1
     policy = verification_policy(manifest)
-    # 正式派工点：需求已就绪时**自动**建立基线（工具做，M1 不需要额外命令）。
-    # 建立失败必须**显式失败**，不能静默吞掉后继续派工（Codex 审阅问题 3）。
+    # 正式派工点：**默认派工路径也走同一套前提校验**（Codex rev2 Q1）——
+    # 不是只给 `gate --dispatch` 补检查。校验不通过则不输出正式简报、也不建基线。
     if role == "worker":
-        _, contract_error = ensure_contract(root, args.task_id, manifest, "taskctl")
-        if contract_error:
-            print(f"BRIEF_FAIL: {contract_error}")
+        # 首次派工严格校验路由；**已在飞行中**的任务（已有基线、已有失败记录或已推进过
+        # attempt）只把路由问题降级为提示——否则恢复期的重新出简报会被旧状态永久挡住。
+        in_flight = (
+            contract_path(root, args.task_id).is_file()
+            or bool(manifest.get("block_attempts"))
+            or int(manifest.get("attempt") or 0) > 0
+        )
+        dispatch_errors = validate_dispatch_ready(
+            root, args.task_id, manifest, round_data, strict_routing=not in_flight
+        )
+        if dispatch_errors:
+            print(f"BRIEF_FAIL: {args.task_id} 尚未满足正式派工前提")
+            for error in dispatch_errors:
+                print(f"- {error}")
             return 1
     owner = str(manifest.get("owner") or "")
     worker_window = task_worker_route(round_data, args.task_id) or owner
@@ -5120,6 +5418,11 @@ def build_parser() -> argparse.ArgumentParser:
     adjudicate.add_argument("task_id")
     adjudicate.add_argument("kind", choices=["accept"], help="accept = accept the current standard change")
     adjudicate.add_argument("--reason", required=True, help="evidence for accepting the change")
+    adjudicate.add_argument(
+        "--origin",
+        default="unspecified",
+        help="where the change came from (e.g. 'user added a new requirement'); recorded for audit",
+    )
     adjudicate.add_argument("--actor", choices=["M1"], default="M1")
     sub.add_parser("selftest", help="run bundled tests next to this script")
     return parser

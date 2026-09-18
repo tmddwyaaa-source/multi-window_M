@@ -203,16 +203,17 @@ def main() -> int:
 
     run(["attempt", "TASK-001", "--block-id", "B1", "--reason", "f1", "--actor", "worker"], s)
     before = failures()
-    # 重复提交同一次失败 → 不重复计数
+    # 同一轮内再次提交 = 同一次失败的**补充说明**：记录证据但不增加计数
     code, out = run(
-        ["attempt", "TASK-001", "--block-id", "B1", "--reason", "f1", "--actor", "worker"], s
+        ["attempt", "TASK-001", "--block-id", "B1", "--reason", "补充：现象仍在", "--actor", "worker"], s
     )
     expect(
         "F-pos-duplicate-failure-not-counted",
-        code == 1 and failures() == before and "DUPLICATE_EVENT" in out,
+        code == 0 and failures() == before and "FAILURE_SUPPLEMENTED" in out,
         f"code={code} failures={failures()} before={before} out={out}",
     )
-    # 第二次真实失败 → REASSIGN_REQUIRED，且换人不增加失败次数
+    # 第二次真实失败必须是"恢复施工之后"的失败（失败身份含修复轮次）
+    run(["transition", "TASK-001", "in_progress", "--actor", "M1"], s)
     code, out = run(
         ["attempt", "TASK-001", "--block-id", "B1", "--reason", "f2", "--actor", "worker"], s
     )
@@ -234,7 +235,8 @@ def main() -> int:
         code == 0 and "HANDOFF_CONFIRMED" in out and failures() == 2,
         f"code={code} out={out}",
     )
-    # 第三次真实失败 → 硬停仍然保留
+    # 第三次真实失败（同样要"恢复施工之后"）→ 硬停仍然保留
+    run(["transition", "TASK-001", "in_progress", "--actor", "M1"], s)
     code, out = run(
         ["attempt", "TASK-001", "--block-id", "B1", "--reason", "f3", "--actor", "worker"], s
     )
@@ -243,6 +245,13 @@ def main() -> int:
         "F-pos-third-failure-still-hard-stops",
         failures() == 3 and manifest.get("hard_stop") is True and "HARD_STOP" in out,
         f"failures={failures()} hard_stop={manifest.get('hard_stop')} out={out}",
+    )
+    # 硬停后普通路径不得恢复施工（rev2 Q2 的硬停保护）
+    code, out = run(["reassign", "TASK-001", "--owner", "M5", "--reason", "普通换人"], s)
+    expect(
+        "F-neg-hard-stop-blocks-plain-reassign",
+        code != 0 and "HARD_STOP_ACTIVE" in out,
+        f"code={code} out={out}",
     )
 
     # ---------- 3. 验收者仍独立 ----------

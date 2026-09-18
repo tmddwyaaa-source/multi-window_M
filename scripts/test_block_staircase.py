@@ -97,6 +97,10 @@ def main() -> int:
         json.dumps(manifest.get("assignment_history")),
     )
 
+    # 第二次失败必须是**新的一轮修复之后**的失败：0.36 起失败身份 = 修复轮次 +
+    # 卡点 + 负责人（reason 不参与）。所以真实流程是"原负责人恢复施工 → 再次失败"，
+    # 而不是在同一轮里重复提交（那属于同一次失败的补充说明）。
+    run(["--root", str(root), "transition", "TASK-001", "in_progress", "--actor", "M1"])
     code, out = run(
         [
             "--root", str(root), "attempt", "TASK-001",
@@ -127,6 +131,8 @@ def main() -> int:
         json.dumps(manifest.get("block_history")),
     )
 
+    # 第三次失败同样需要"恢复施工 → 再次失败"
+    run(["--root", str(root), "transition", "TASK-001", "in_progress", "--actor", "M1"])
     code, out = run(
         ["--root", str(root), "attempt", "TASK-001", "--block-id", "B1", "--reason", "f3", "--actor", "worker"]
     )
@@ -142,16 +148,25 @@ def main() -> int:
         f"code={code} out={out} block={manifest.get('block_attempts')}",
     )
 
+    # 0.36 语义：硬停之后**施工被拦住**，所以"第四次失败"在真实流程里无法发生。
+    # - 同轮再提交 → 只作补充说明（不增加计数）；
+    # - 想恢复施工 → 被硬停保护拒绝。
     code, out = run(
         ["--root", str(root), "attempt", "TASK-001", "--block-id", "B1", "--reason", "f4", "--actor", "worker"]
     )
     manifest = manifest_of(root)
     expect(
-        "K-neg-fourth-failure-rejected",
-        code != 0
-        and "卡点上限" in out
+        "K-neg-fourth-failure-not-counted",
+        code == 0
+        and "FAILURE_SUPPLEMENTED" in out
         and manifest["block_attempts"]["attempts"] == 3,
         f"code={code} out={out} block={manifest.get('block_attempts')}",
+    )
+    code, out = run(["--root", str(root), "transition", "TASK-001", "in_progress", "--actor", "M1"])
+    expect(
+        "K-neg-hard-stop-blocks-resume",
+        code != 0 and "HARD_STOP_ACTIVE" in out,
+        f"code={code} out={out}",
     )
 
     code, out = run(
@@ -211,6 +226,9 @@ def main() -> int:
         f"code={code} out={out}",
     )
 
+    # 0.36：第二次失败必须是"恢复施工之后"的失败（失败身份含修复轮次）。
+    # 所以先让 C1 重新开工，再由 M1 打回 —— 这才是真实时序。
+    run(["--root", str(root), "transition", "TASK-001", "in_progress", "--actor", "M1"])
     code, out = run(
         ["--root", str(root), "reopen", "TASK-001", "--block-id", "B2", "--reason", "M1 打回"]
     )

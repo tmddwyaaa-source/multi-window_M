@@ -237,12 +237,69 @@ fail closed 覆盖所有写子命令（`init` / `round-init` / `round-close` / `
 
 ## 三次失败梯级与负责人交接（0.36）
 
-- 一次**真实失败**只计一次；**换人不增加失败次数**。
-- 第二次失败 → `REASSIGN_REQUIRED`：换一个**真正不同**的合格负责人（`reassign --owner`），并同步 `round.tasks` worker 路由、保留不同的 verifier。
-- 同负责人**可以确认已有交接**（幂等，输出 `HANDOFF_CONFIRMED`），但**不算**满足第二次真换人；从未接手过的窗不能拿同 owner 当确认。
-- 第三次失败 → **硬停保留**：输出 `HARD_STOP` 且退出码非 0，写 `docs/BLOCKERS/`。没有合格人选时写 `NO_ELIGIBLE_REPLACEMENT_WORKER`。
+**失败事件的唯一身份 = 修复轮次 + 卡点 + 负责人。`reason` 是解释材料，不是身份。**
 
-`migrate-project` 覆盖已有 `scripts/taskctl.py` 必须 `--force`，且先备份。顺序是 **备份 → 识别旧格式 → 转换 → 验证 → 提交版本标记**，逐文件报告 `changed/already/skipped/failed`；缺信息**明确报告、不编造**；失败时**不提交 schema 契约**，不会留下"成功标记 + 无法操作"的半迁移状态。报告与 lock 写完后再 `--check`；未 `MIGRATE_READY` 不要开发新功能。
+- **修复轮次**：每次**进入施工态**（`in_progress`）算新一轮。查看、出简报、重复传话、
+  同负责人确认交接都不推进轮次。
+- 同一轮次 + 同卡点 + 同负责人再次提交 → `FAILURE_SUPPLEMENTED`：**记录补充证据，不增加计数**。
+  所以"换一句话再说一遍"不会被计成第二次失败。
+- **修复一轮之后再次出现同样错误 → 新事件，照常计数**（这是"改了还是错"的正解）。
+- 换根因请用**不同的 `block_id`**（既有规则还有 `BLOCK_ID_CHANGE_REQUIRES_EVIDENCE`），
+  不要靠换措辞表示新失败。
+- 一次真实失败只计一次；**换人不增加失败次数**；重复的同一交接只确认（`HANDOFF_CONFIRMED`）。
+- 第二次失败 → `REASSIGN_REQUIRED`：换一个**真正不同**的合格负责人，并同步 `round.tasks`
+  的 worker 路由、保留不同的 verifier。同负责人**可以确认已有交接**（幂等），但不算真换人。
+- 第三次失败 → **硬停保留**：输出 `HARD_STOP` 且退出码非 0，写 `docs/BLOCKERS/`。
+  没有合格人选时写 `NO_ELIGIBLE_REPLACEMENT_WORKER`。
+- **硬停保护**：硬停期间**普通 `reassign` / `transition` 一律拒绝**（`HARD_STOP_ACTIVE`），
+  且不改状态。两个显式出口：`--adjudicate-hard-stop --reason <证据>`（留痕），
+  或 `--new-root`（带证据换根因，旧硬停随之解除并留痕）。
+
+## 派工点（0.36）
+
+**正式派工前提由唯一实现校验**（`gate <task> --dispatch` 与 `brief`/`packet` 共用同一套）：
+
+> 任务身份 → 需求（非模板占位）→ **来源映射** → 边界 `allowed_paths` → 验证策略 → 本轮路由
+> → 全部通过后**才**保存派工基线 → 才输出正式简报。
+
+- 校验不通过：**既不保存"已准备好"的基线，也不输出成功派工**。
+- 首次派工校验**包含路由**；已在飞行中的任务（已有基线 / 已有失败记录 / `attempt>0`）
+  重新出简报时，路由问题降级为提示——否则恢复期会被旧状态永久挡住。
+- 需求与边界都就绪但基线缺失时，工具在派工点自动补建（不需要 M1 额外命令）。
+
+## 验收标准变更的接受（0.36）
+
+`adjudicate <task> accept --reason <证据>`（**仅 M1**）用来说明"这次变化可以被接受"。
+它**必须带验收者对本次变化的实际判断**，不能由 M1 自己声明"已复核"：
+
+- 需要 `verify-report.json`，且 `reviewer` **不是** owner/worker；
+- 且满足任一：报告里 `contract_key` 等于当前变化指纹（明确针对本次），
+  或报告文件比 `manifest` 更新（变化之后才复查的）；
+- 旧报告若 `contract_key` 不一致 → `ADJUDICATE_STALE_EVIDENCE`（旧 pass 不覆盖新变化）；
+- 接受记录会留下：变化指纹、原需求原文、变化来由（`--origin`）、**判断者与依据报告**、M1 理由。
+
+基线的四种情形（不能用"文件现在不存在"推定"过去从未存在"）：
+
+| 情形 | 处理 |
+|---|---|
+| 可确认的历史任务（从未在新版派工过） | **只在收口时提示一次**，不阻断、不重复制造噪声 |
+| 新版派工过（`manifest.contract_baseline` 有标记）但基线消失 | **阻断**：`ACCEPTANCE_BASELINE_LOST`，恢复可信备份或按明确审查处理 |
+| 基线损坏/结构不合法 | **阻断**：`ACCEPTANCE_BASELINE_CORRUPT` |
+| 正常 | 照常对比 |
+
+## 迁移（0.36）
+
+`migrate-project` 覆盖已有 `scripts/taskctl.py` 必须 `--force`，且先备份。顺序是
+**备份 → 全部输入预检（只算不写）→ 通过后提交 → 提交失败则回滚**：
+
+- 预检不通过：**共同文件与目标脚本一个字节都不改**，schema 契约不提交；
+- 提交阶段中途 I/O 失败：用预先记录的原始字节**回滚**已改写的文件；
+- 逐文件报告 `changed/already/skipped/failed`；缺信息**明确报告、不编造**；
+- 结构验证不只看 `status`：工具创建的模板可以留空 `owner/allowed_paths/requirements`，
+  但必须带 `init` 一定写入的骨架字段（`track`/`risk`/`status_history`）；
+  缺骨架的**残缺文件**不被接受。
+
+报告与 lock 写完后再 `--check`；未 `MIGRATE_READY` 不要开发新功能。
 
 前四条 `transition` 是 **low 且 attempt < 2** 的短路径（M1 查收时本窗重跑 Full Gate 后再 `integrated`）。后两条仅在策略表要求独立验收时使用；medium/high 或 `attempt >= 2` **禁止** `worker_done → integrated`。
 

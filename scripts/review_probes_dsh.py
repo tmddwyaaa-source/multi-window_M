@@ -38,9 +38,13 @@ def rj(path):
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+FAILURES: list = []
+
+
 def check(name, ok, detail):
     print(f"{'PASS' if ok else 'FAIL'}  {name}")
     if not ok:
+        FAILURES.append(name)
         print(f"      {detail}")
 
 
@@ -112,6 +116,8 @@ def P2():
        "hook_supervision": False, "check_requested": False})
     run(["transition", "TASK-001", "in_progress", "--actor", "M1"], root)
     run(["attempt", "TASK-001", "--block-id", "B1", "--reason", "f1", "--actor", "worker"], root)
+    # 0.36：第二次失败必须是"恢复施工之后"的失败（失败身份含修复轮次）
+    run(["transition", "TASK-001", "in_progress", "--actor", "M1"], root)
     run(["attempt", "TASK-001", "--block-id", "B1", "--reason", "f2", "--actor", "worker"], root)
     run(["reassign", "TASK-001", "--owner", "M4", "--reason", "换人"], root)
     run(["attempt", "TASK-001", "--block-id", "B1", "--reason", "f3", "--actor", "worker"], root)
@@ -179,8 +185,26 @@ def P4():
     code, out = run(["gate", "TASK-001"], root)
     check("P4c 变更时收口被拒", code == 1 and "ACCEPTANCE_CHANGED" in out, f"code={code}")
     check("P4d 报错里给出原标准", "原需求与原标准" in out and "要能跑" in out, out[:300])
-    code, out = run(["adjudicate", "TASK-001", "accept", "--reason", "新标准更严，验收者已复核"], root)
-    check("P4e M1 显式接受成功", code == 0 and "ACCEPTANCE_ACCEPTED" in out, f"code={code} out={out[:200]}")
+    # rev2 Q2：接受必须带**验收者对本次变化的判断**。
+    # 先在**同一 root** 上验证"无证据被拒"，再补证据验证"能接受"。
+    key = t.acceptance_key(diffs)
+    code_no, out_no = run(
+        ["adjudicate", "TASK-001", "accept", "--reason", "no verifier report"], root
+    )
+    check("P4e0 无验收证据时拒绝接受",
+          code_no != 0 and "ADJUDICATE_NO_EVIDENCE" in out_no,
+          f"code={code_no} out={out_no[:200]}")
+    wj(root / ".task" / "TASK-001" / "verify-report.json", {
+        "task_id": "TASK-001", "reviewer": "C1", "result": "pass",
+        "checked_requirements": ["R1"], "missing": [], "contract_key": key,
+    })
+    code, out = run(["adjudicate", "TASK-001", "accept", "--reason", "验收者已复核本次变化"], root)
+    check("P4e M1 显式接受成功", code == 0 and "ACCEPTANCE_ACCEPTED" in out, f"code={code} out={out[:250]}")
+    stored_after = rj(root / ".task" / "TASK-001" / "contract.json")
+    judgment = (stored_after.get("accepted_changes") or [{}])[-1].get("judgment") or {}
+    check("P4e1 接受记录留住了判断者与依据",
+          judgment.get("reviewer") == "C1" and judgment.get("report_hash"),
+          json.dumps(judgment, ensure_ascii=False)[:200])
     code, out = run(["gate", "TASK-001"], root)
     check("P4f 接受后不再因该变化被拒", "ACCEPTANCE_CHANGED" not in out, out[:300])
 
@@ -250,12 +274,21 @@ def P7():
     check("P7b 不得给出 MIGRATE_READY", "MIGRATE_READY" not in out2, out2[:200])
 
 
-def main():
+def main() -> int:
+    """退出码必须反映结果：有 FAIL 就非 0。
+
+    （Codex rev2 §6 指出：早先 check() 只打印，main() 恒返回 0，
+    所以"退出 0"不能用来判断全部通过。）
+    """
     print("=== 复验 Codex 审阅的 7 条（反例 + 合法正例） ===")
     for probe in (P1, P2, P3, P4, P5, P6, P7):
         print(f"\n--- {probe.__name__} ---")
         probe()
-    print("\n=== 完 ===")
+    print()
+    if FAILURES:
+        print(f"== {len(FAILURES)} 项 FAIL：{'; '.join(FAILURES)} ==")
+        return 1
+    print("== 全部通过 ==")
     return 0
 
 
