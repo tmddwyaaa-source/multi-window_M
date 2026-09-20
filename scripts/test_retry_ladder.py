@@ -117,7 +117,15 @@ def main() -> int:
     )
 
     # 夹具模拟"原负责人重新施工"：按 0.36 语义必须走真实 transition（见文件头说明）。
-    run(["transition", "TASK-001", "in_progress", "--actor", "M1"], root)
+    # **并断言这次转换真的成功**——不能只运行后忽略结果（Codex rev4 复核指出）。
+    resume_code, resume_out = run(
+        ["transition", "TASK-001", "in_progress", "--actor", "M1"], root
+    )
+    expect(
+        "R-pos-resume-work-succeeds",
+        resume_code == 0 and "in_progress" in resume_out,
+        resume_out,
+    )
     code, out = run(
         ["reopen", "TASK-001", "--block-id", "BLOCK-OTHER", "--reason", "renamed", "--actor", "M1"],
         root,
@@ -161,8 +169,15 @@ def main() -> int:
         out,
     )
 
-    # 夹具模拟"工人重新交付"：同样走真实 transition（见文件头说明）。
-    run(["transition", "TASK-001", "worker_done", "--actor", "worker"], root)
+    # 夹具模拟"工人重新交付"：同样走真实 transition，并**断言转换成功**。
+    deliver_code, deliver_out = run(
+        ["transition", "TASK-001", "worker_done", "--actor", "worker"], root
+    )
+    expect(
+        "R-pos-redeliver-succeeds",
+        deliver_code == 0 and "worker_done" in deliver_out,
+        deliver_out,
+    )
     code, out = run(
         ["reopen", "TASK-001", "--block-id", "BLOCK-UI", "--reason", "third fail", "--actor", "M1"],
         root,

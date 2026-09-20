@@ -276,11 +276,16 @@ fail closed 覆盖所有写子命令（`init` / `round-init` / `round-close` / `
 
 - 报告**归属**必须正确：`verify-report.task_id` 对应本任务；
 - `reviewer` 必须是**合法窗号**（M1-M10 / Cn）、**不同于实现者**；
-  需要独立验收时还必须是**本轮指派的 verifier**（验收路由一致）；
+  需要独立验收时，本轮**必须已指派验收窗**，且 `reviewer` **就是**它
+  （未指派 → `ADJUDICATE_NO_VERIFIER_ROUTE`；不是它 → `ADJUDICATE_WRONG_REVIEWER`）。
+  **不能让任一台合法窗代替独立验收**；
 - 报告必须写 `contract_key` = **当前变化指纹**（**不接受按文件时间推定**——
   复制/重存/恢复都会改时间，不代表重新审查过原标准）；不一致 → `ADJUDICATE_STALE_EVIDENCE`；
-- 报告还必须写**针对本次变化的独立结论** `standard_verdict ∈ {equivalent, stricter, accepted}`。
-  功能验收的 `result` **不能**代替变更审查结论（功能 fail 不能被包装成完工）。
+- 报告还必须写**针对本次变化的独立结论** `standard_verdict`：
+  `equivalent`（与原文等价）/ `stricter`（比原文更严）/
+  **`superseded`（原要求被取代，必须同时写 `standard_basis` 说明依据）**。
+  泛泛的 `accepted` 不被接受；功能验收的 `result` **不能**代替变更审查结论
+  （功能 fail 不能被包装成完工）。用户新增需求的来由由 M1 的 `--origin` 记录。
 
 该 `contract_key` 与差异由 **verifier 的 `brief`/`packet` 自动给出**（"标准变化审查"一节），
 验收 agent 照抄进已有报告即可——用户不需要知道字段名，也不需要多跑命令。

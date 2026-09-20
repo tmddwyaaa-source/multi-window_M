@@ -2,6 +2,21 @@
 
 当前规则以 `SKILL.md` 的 `version` 字段为准。本文件只作历史说明，**不得当作当前规则引用**。
 
+## 0.36-dsh rev5 — rev4 复核的剩余漏洞（2026-09-18）
+
+Codex 复核 rev4：四类补修通过、同意共享测试夹具的改法（Q1）、`equivalent`/`stricter` 保留（Q2）、
+简报位置合适（Q3）；但**复现了一个剩余漏洞**并指出测试的一处毛病。均已修正。
+
+| # | 发现 | 修法 |
+|---|---|---|
+| 1 | **需要独立验收但未指派验收窗时，接受仍然成功**：中风险任务本轮没有 `verifier_assignments`，只要另一台合法窗写一份 `contract_key` 匹配的报告，`adjudicate accept` 就返回 0。后续 Full Gate 可能另行拦住任务，但"**接受变更**"这一步不该先记成有效 | 策略要求独立验收时：**必须存在本轮指派的验收窗**，且 `reviewer` 必须**就是**它。未指派 → `ADJUDICATE_NO_VERIFIER_ROUTE`（先用 `assign-verifier` 指定，再由该窗复查）；不是它 → `ADJUDICATE_WRONG_REVIEWER` |
+| 2 | `standard_verdict=accepted` 含义太宽 | 取值改为 `equivalent`（等价）/ `stricter`（更严）/ **`superseded`（原要求被取代，必须再写 `standard_basis` 说明依据）**。泛泛的 `accepted` 不再被接受。用户新增需求的来由仍由 M1 的 `--origin` 记录，不扩充枚举 |
+| 3 | 测试毛病：夹具的两处 `transition` 只运行、不断言结果 | 共享契约测试新增 `R-pos-resume-work-succeeds` 与 `R-pos-redeliver-succeeds` 两条断言，确认那两次转换**真的成功**；原有 5 条梯级断言一条未动（现共 7 项） |
+
+**验证**：`rev4_hole_probe.py` 复现 H1/H2（均成立），修后 4/4 不再复现。
+注意：第一次写这个探针时"通过"是**假的**——`gate --dispatch` 因缺验收窗先失败，导致 `adjudicate`
+因为"没有基线"报错，伪装成已修好。改成"先以合法姿态建基线，再制造漏洞场景"才真正复现。
+
 ## 0.36-dsh rev3 — rev2 复核 4 条 + 迁移回滚（2026-09-18）
 
 Codex 复核 rev2 又发现 4 条缺陷与 1 处回滚缺口（我先逐条独立复现，**6/6 成立**）。全部修正。

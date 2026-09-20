@@ -2084,7 +2084,9 @@ def verifier_judgment_evidence(
             f"ADJUDICATE_NO_EVIDENCE: verify-report.reviewer={reviewer!r} 就是实现者"
             f"（owner={owner!r}）；实现者不能自己审查自己的标准变化。"
         )
-    # 需要独立验收时，审查者必须是被指派的那一位（复用既有路由规则）
+    # 需要独立验收时，审查者**必须**是本轮指派的验收窗。
+    # （Codex rev4 复核的剩余漏洞：未指派验收窗时，任一合法窗写一份 key 匹配的报告
+    #   也会被接受——"接受变更"这一步不该先记成有效。）
     policy = verification_policy(manifest)
     if policy["independent_verification"]:
         try:
@@ -2092,7 +2094,14 @@ def verifier_judgment_evidence(
         except ValueError:
             round_data = None
         assigned = task_verifier_route(round_data, task_id)
-        if assigned and reviewer != assigned:
+        if not assigned:
+            return None, (
+                "ADJUDICATE_NO_VERIFIER_ROUTE: "
+                f"{task_id} 的策略要求**独立验收**，但本轮没有为它指派验收窗。"
+                "请先用 `assign-verifier` 指定本轮正式验收窗，再由该窗复查本次变化；"
+                "不能让任一台合法窗代替独立验收。"
+            )
+        if reviewer != assigned:
             return None, (
                 f"ADJUDICATE_WRONG_REVIEWER: reviewer={reviewer!r} 不是本轮指派的 verifier"
                 f"（{assigned!r}）——验收路由必须一致。"
@@ -2110,12 +2119,19 @@ def verifier_judgment_evidence(
             f"ADJUDICATE_STALE_EVIDENCE: 报告的 contract_key={report_key} 与当前变化"
             f"（{key}）不一致——旧报告不覆盖新变化，请重新审查本次变化。"
         )
+    # 独立结论：去掉含义过宽的 `accepted`（Codex rev4 Q2）。"原要求被取代"必须写依据。
     verdict = str(report.get("standard_verdict") or "").strip().lower()
-    if verdict not in {"equivalent", "stricter", "accepted"}:
+    if verdict not in {"equivalent", "stricter", "superseded"}:
         return None, (
-            f"ADJUDICATE_NO_VERDICT: 报告缺少针对本次变化的明确审查结论"
-            f"（`standard_verdict` 需为 equivalent / stricter / accepted，当前={verdict!r}）。"
-            "功能验收的 result 不能代替变更审查结论。"
+            f"ADJUDICATE_NO_VERDICT: 报告缺少针对本次变化的明确独立结论"
+            f"（`standard_verdict` 需为 equivalent / stricter / superseded，当前={verdict!r}）。"
+            "功能验收的 result 不能代替变更审查结论；泛泛的 accepted 不被接受。"
+        )
+    basis = str(report.get("standard_basis") or "").strip()
+    if verdict == "superseded" and not basis:
+        return None, (
+            "ADJUDICATE_NO_BASIS: `standard_verdict=superseded` 表示原要求被取代，"
+            "必须在报告的 `standard_basis` 里写明依据（谁、何时、改了什么要求）。"
         )
     evidence = {
         "reviewer": reviewer,
@@ -2123,6 +2139,7 @@ def verifier_judgment_evidence(
         "report_hash": sha256_file(path),
         "contract_key": report_key,
         "standard_verdict": verdict,
+        "standard_basis": basis,
         "functional_result": str(report.get("result") or ""),
     }
     return evidence, ""
@@ -4928,11 +4945,15 @@ def cmd_brief(
             write(
                 "- 请在 `verify-report.json` 里写："
                 f"`\"contract_key\": \"{acceptance_key(diffs)}\"` 与 "
-                "`\"standard_verdict\": \"equivalent\"|\"stricter\"|\"accepted\"`"
+                "`\"standard_verdict\": \"equivalent\"|\"stricter\"|\"superseded\"`"
+            )
+            write(
+                "- `equivalent` = 与原文等价；`stricter` = 比原文更严；"
+                "`superseded` = 原要求被取代（**必须**再写 `standard_basis` 说明依据）。"
             )
             write(
                 "- `standard_verdict` 是**针对本次变化**的独立结论；"
-                "功能验收的 `result` 不能代替它。未写这两项时 M1 无法接受该变化。"
+                "功能验收的 `result` 不能代替它。未写这些项时 M1 无法接受该变化。"
             )
     write()
     write("## allowed_paths")
