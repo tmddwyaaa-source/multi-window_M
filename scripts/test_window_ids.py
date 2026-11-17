@@ -48,7 +48,7 @@ def main() -> int:
         module.WINDOW_RE.pattern == r"^(?:M[1-9]|M10|C[1-9][0-9]*)$",
         module.WINDOW_RE.pattern,
     )
-    expect("W-src-version-035", module.SKILL_VERSION == "0.35", module.SKILL_VERSION)
+    expect("W-src-version-033", module.SKILL_VERSION == "0.33", module.SKILL_VERSION)
 
     for value in ("M1", "M10", "C1", "C4", "C99"):
         expect(f"W-pos-valid-{value}", module.valid_window(value) is True, value)
@@ -67,36 +67,34 @@ def main() -> int:
         expect(f"W-doc-templates-no-{token}", token not in templates, token)
     expect(
         "W-doc-templates-ordinary-filename",
-        "batch-02.json" in templates and "/multi-window-m-035" in templates,
+        "batch-02.json" in templates and "/multi-window-m-033" in templates,
         templates[:200],
     )
-    # The invocation token must be byte-identical to the frontmatter name and to
-    # the directory name: hosts match `/name` against `name` exactly, and only
-    # accept lowercase letters, digits, and hyphens.
+    # DSH 宿主专属守卫（0.33 的 DSH 兼容版新增）：
+    # 宿主按 `name` 字段调用、按文件夹发现，且**只接受小写字母、数字、连字符**。
+    # 所以技能名必须是 kebab-case，并且与安装目录名逐字符一致。
     name_line = next(
         (line for line in skill.splitlines() if line.startswith("name:")), ""
     )
     declared = name_line.split(":", 1)[1].strip() if ":" in name_line else ""
-    expect("W-doc-name-is-kebab", declared == "multi-window-m-035", declared)
-    # 宿主按文件夹发现技能、按 `name` 调用：**安装到宿主技能目录时两者必须一致**。
-    # 发布仓库的根目录叫 multi-window_M（带下划线/大写，不是 kebab），不可能相等，
-    # 所以这里在仓库里降级为提示；可用 MULTI_WINDOW_ACCEPT_DIR 显式声明允许的目录名。
+    expect(
+        "W-dsh-name-is-kebab",
+        declared == "multi-window-m-033"
+        and all(char.islower() or char.isdigit() or char == "-" for char in declared),
+        declared,
+    )
     accepted_dirs = {declared} | {
         item.strip()
         for item in (os.environ.get("MULTI_WINDOW_ACCEPT_DIR") or "").split(",")
         if item.strip()
     }
     if SKILL_ROOT.name in accepted_dirs:
-        expect("W-doc-name-matches-folder", True, SKILL_ROOT.name)
+        expect("W-dsh-name-matches-folder", True, SKILL_ROOT.name)
     else:
         print(
-            f"NOTE W-doc-name-matches-folder: 目录名 {SKILL_ROOT.name!r} != 技能名 {declared!r}"
+            f"NOTE W-dsh-name-matches-folder: 目录名 {SKILL_ROOT.name!r} != 技能名 {declared!r}"
             "；安装到宿主技能目录时必须一致（发布仓库允许不一致）"
         )
-    legacy = "multi-window_M-0.33"
-    hooks = (SKILL_ROOT / "references" / "hooks.md").read_text(encoding="utf-8")
-    for label, body in (("skill", skill), ("templates", templates), ("hooks", hooks)):
-        expect(f"W-doc-{label}-no-legacy-invocation", legacy not in body, legacy)
 
     identity = skill.split("## 窗口身份（窗号）", 1)[1]
     after_identity = identity.split("\n## ", 1)[1] if "\n## " in identity else ""

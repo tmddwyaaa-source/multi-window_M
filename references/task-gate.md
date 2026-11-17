@@ -36,7 +36,7 @@ py -3 scripts/taskctl.py --root <项目根> status --markdown --write
 - `worker_done`：`worker`
 - `verifying`、`verified`：`verifier`
 - `integrated`、`done`：`M1`（短路径上 `worker_done → integrated` 也必须是 M1）
-- `reopened`：`M1`，同时递增 `attempt`（任务级）并计入当前 `block_attempts`（卡点级）
+- `reopened`：`M1`，同时递增任务总 `attempt` 并记录同根因 `block_id`
 
 `verified`、`integrated`、`done` 迁移前脚本会重新运行 Full Gate；`done` 还必须从 `integrated` 进入。人工可改为 `paused`、`blocked` 或 `reopened`，但不能无证据伪造 `verified` / `done`。
 
@@ -44,11 +44,7 @@ py -3 scripts/taskctl.py --root <项目根> status --markdown --write
 
 - **G0**：任务目录、manifest、工人报告、独立验收报告是否存在（后者仅策略要求独立验收时强制）。
 - **G1**：R 编号是否完整覆盖，是否有对应证据。
-- **G2**：测试退出码、diff 越界；只允许改 `allowed_paths`。Full Gate 会真跑命令、核 evidence 路径、有 Git 时核工作区。`manifest.json` / `rerun.json` / `verify-report.json` 未列入工人 `changed_files` 不算漏报。`src/`、`tests/`、`worker_report.json`、evidence 仍必须申报。路径只去掉 `./` 前缀，保留 `.task/`。
-
-> **工作区核对的前提（实测确认）：** 只有 `.git` 存在**且已有 HEAD**（至少一次提交）时，`git diff HEAD` 才会成功，未申报变更才会被拦。
-> 刚 `git init` 但还没首次提交的仓库会让 `git_changed_files()` 返回 `skipped`，**静默跳过**工作区核对——此时改了 `allowed_paths` 内未申报的文件也不会报错。
-> 所以：靠 G2 卡"未申报改动"的项目，**开工前必须先有一次提交**。无 Git 或未提交时，改为靠 `changed_files` 申报纪律与本窗复跑，不要以为 G2 在替你兜底。
+- **G2**：测试退出码、diff 越界；只允许改 `allowed_paths`。Full Gate 会真跑命令、核 evidence 路径、有 Git 时核工作区。`manifest.json` / `rerun.json` / `verify-report.json` 未列入工人 `changed_files` 不算漏报。`src/`、`tests/`、`worker-report.json`、evidence 仍必须申报。路径只去掉 `./` 前缀，保留 `.task/`。
 - **G3**：策略要求独立验收时，必须有独立验收报告，且 `reviewer` 不得等于实现窗口。
 
 `--basic` 只跑到工人材料，不重跑命令。Hook 不标 done，也不因重跑失败去改状态。
@@ -59,13 +55,12 @@ py -3 scripts/taskctl.py --root <项目根> status --markdown --write
 - `BASIC_GATE_PASS` + `FULL_GATE_FAIL`：有任务未通过，不能收口。
 - `BASIC_GATE_PASS` + `FULL_GATE_PASS` + `ROUND_READY_TO_CLOSE`：本轮所有任务均通过，M1 才能逐项 `done`。
 - `POLICY_CONFLICT`：策略无法唯一决定，停止收口。
-- `VERIFIER_ASSIGNMENT_MISSING`：需要独立验收但没有 `round.verifier_assignments[T]`。
-- `VERIFIER_ASSIGNMENT_CONFLICT`：verifier 不在本轮窗内、等于 owner/worker、短路径却派了 verifier，或 `verify-report.reviewer` 不等于被指派的 verifier（冒名验收）。
-- `WORKER_ASSIGNMENT_CONFLICT`：`round.tasks` 里该任务的 worker 窗不等于 `manifest.owner`。
 - `REQUIREMENT_COVERAGE_FAIL`：有用户需求未映射到 R 项，停止收口。
 - `GEAR_VIOLATION`：未确认却宣称 bonus / 协作挡 A，停止收口。
 - `HOOK_EVIDENCE_MISSING`：声明了 hook 监督但没有宿主 stop 的 start/end 对，停止收口。
 - `PARALLEL_FAIL`：子代理同文件并发、重复、工人兼 verifier 或越权路径，停止收口。
+- `REASSIGN_REQUIRED`：同一 `block_id` 第 2 次失败，必须先换不同的正式 M/C owner。
+- `HARD_STOP`：同一 `block_id` 第 3 次失败，已写 BLOCKERS；不得继续盲目重试。
 - `MIGRATE_FAIL`：无备份许可的覆盖、无 lock 就 `--check`、或把运行中的脚本迁到自己身上。
 - `MIGRATE_READY` / `MIGRATE_CHECK_FAIL`：`migrate-project --check` 的四项迁移健康检查。
 
@@ -76,9 +71,7 @@ py -3 scripts/taskctl.py --root <项目根> status --markdown --write
 ```text
 .task/
 ├─ round.json
-├─ hook-runs.jsonl          # gitignore；Cursor/Codex/Zcode 证据；最多 100 行
-├─ dsh-runs.jsonl           # gitignore；dsh 证据账本；最多 400 行
-├─ dsh-hook-status.json     # 可选，仅当 dsh 桥接用了 --status；gitignore
+├─ hook-runs.jsonl          # gitignore；最多 100 行
 ├─ TASK-001/
 │  ├─ manifest.json
 │  ├─ worker-report.json
@@ -90,83 +83,19 @@ py -3 scripts/taskctl.py --root <项目根> status --markdown --write
 
 ## manifest.json
 
-顶层 `schema_version`（0.35 新增，共同文件契约版本）与 `skill_version` **不是一回事**。新建任务由 `taskctl.py init` 写入当前值；旧文件缺失视为旧 schema，走迁移兼容路径。
+最小字段：`task_id`、`owner`、`track`、`risk`、`allowed_paths`、`source_refs`、`requirements`、`attempt`。每个 requirement 至少包含 `id`、`text`、`verify`。可跑的验收命令写在 `verify_cmd`，或把 `verify` 写成可直接执行的命令。
 
-最小字段：`schema_version`、`task_id`、`owner`、`track`、`risk`、`allowed_paths`、`source_refs`、`requirements`、`attempt`。每个 requirement 至少包含 `id`、`text`、`verify`。可跑的验收命令写在 `verify_cmd`，或把 `verify` 写成可直接执行的命令。
+0.33 新建任务还会写：`assignment_history`、`block_history`。它们不是新角色或第二套状态：`owner` 始终是**当前负责人**；`assignment_history` 只追加“旧 owner → 新 owner / 原因 / block_id / 次数”；`block_history` 只记录同根因失败。旧项目迁入时可缺这两项，第一次重新派负责人时脚本会补初始记录。
 
-**两个计数轴，不要混用：**
-
-| 字段 | 含义 | 作用 | 重置规则 |
-|---|---|---|---|
-| `attempt` | 任务级历史失败次数 | **只驱动验收策略**（`attempt >= 2` → 独立验收） | 单调递增，不重置 |
-| `block_attempts` | **当前卡点**的失败次数 | **只驱动三级阶梯**（1 复用 / 2 换人 / 3 硬停） | 新根因（`--new-root` + 证据）才重置 |
-
-**旧数据回落（`LEGACY_UNSCOPED`）**：0.34 及更早的 manifest 没有 `block_attempts`，此时卡点计数回落到任务级 `attempt`。这是**保守兼容**（旧项目不会因为缺字段凭空多出重试次数），迁移报告里会写明。
-
-`block_attempts` 结构：
-
-```json
-{
-  "block_id": "B1",
-  "attempts": 2,
-  "history": [
-    {"attempt": 1, "at": "…", "owner": "M2", "reason": "缺 R1 证据"},
-    {"attempt": 2, "at": "…", "owner": "C1", "reason": "同因仍失败"}
-  ]
-}
-```
-
-`assignment_history`（**独立存放、不可覆盖**；换人时追加，改根因也不得抹掉）：
-
-```json
-[{"from": "M2", "to": "C1", "block_id": "B1", "failure_count": 2, "at": "…", "reason": "…"}]
-```
-
-**三级阶梯（跨宿主稳定性规则）**：
-
-```text
-第 1 次 fail → 复用原执行者（先让它复述打回项）
-第 2 次 fail → 换真正不同的负责窗口/独立执行上下文，并更新 owner
-第 3 次 fail → 硬停；写 docs/BLOCKERS/
-宿主无合格替换者 → 写 BLOCKERS NO_ELIGIBLE_REPLACEMENT_WORKER，不得伪造换人
-```
-
-命令：
-
-```text
-py -3 scripts/taskctl.py --root <项目根> attempt TASK-001 --block-id B1 --reason "<证据>" --actor worker
-py -3 scripts/taskctl.py --root <项目根> attempt TASK-001 --block-id B1 --reason "<打回项>" --actor worker --owner C1
-py -3 scripts/taskctl.py --root <项目根> attempt TASK-001 --block-id B2 --new-root --reason "<新根因证据>" --actor worker
-```
-
-拒绝规则（都有负向用例）：同一卡点第 4 次 → 拒；改 `block_id` 不给 `--new-root` → 拒；`--new-root` 不给证据 → 拒；`--role` 与 `--actor` 不一致 → 拒。
+同一卡点命令必须给稳定 `--block-id`：第 1 次原 owner 修复；第 2 次同 block 必须 `--new-owner`，或先产生 `REASSIGN_REQUIRED` 后运行 `reassign`；第 3 次同 block 自动 `HARD_STOP`。换 root cause 必须给 `--new-root-cause` 说明，不能靠改名逃避计数。`attempt` 是总重开次数，换 owner 不重置，仍用于独立验收策略。
 
 `source_refs` 每条：`id`、`text`（用户原始需求）、`maps_to`（非空 R 编号列表）。每条 R 必须被映射到。`round.json` 可选 `source_requirements`；列出的 id 必须出现在某任务的 `source_refs` 里。未映射 → `REQUIREMENT_COVERAGE_FAIL`。禁止只改聊天话术加需求。
 
-`manifest.read_budget`（可选，但派工前**应当**补）：告诉窗口哪些大件按什么范围读。
-
-```json
-"read_budget": [
-  {"path": "docs/设计表.md", "anchor": "## 2.4 升级池", "lines": "68-105", "why": "只改池"},
-  {"path": "docs/GAME-SPEC.md", "lines": "full", "why": "短文件"}
-]
-```
-
-- `lines` 只接受 `N-M` 或 `full`；其它形状 → Full Gate 拒绝（`read_budget[i] lines must be 'N-M' or 'full'`）。
-- `anchor` 可选（给了就不能为空）：行号会漂移，锚点用于确认读到的是**正确章节**；代码文件可用函数名/类名。
-- 渲染进 `brief` / `packet` 的「读取预算」段。
-- 语义：**只有这里列出的文件允许按给定范围读；其余大件一律不整篇读**。`full` 表示已声明理由允许整篇。
-- **定位由 M1 做**：M1 负责确保范围已定位并写入，可由斥候辅助；**不得要求用户提供行号**。
-- **它是派工约束，不是安全权限边界**——只用于减少无效上下文，不提供隔离保证。
-
 `round.json` 可选：
 
-- `tasks`：**实现路由**。`{"C1": ["TASK-001"]}` —— 该任务的 worker 窗必须等于 `manifest.owner`，否则 `WORKER_ASSIGNMENT_CONFLICT`。
-- `verifier_assignments`：**验收路由**（0.35）。`{"TASK-001": "C2"}`。需要独立验收的任务必须有；verifier 必须在 `expected_windows` 内且不同于 owner/worker；短路径任务不得有。`assign-verifier` 只改这里，不改 `owner` / `attempt` / `block_id` / `assignment_history`。
-- `receipts_by_role`：由 `receipt --role` 写入，`{"C2": "verifier"}`，让状态表能把 C2 显示为 verifier 而不是"又一个 worker"。
 - `gears`：`capability`=`default|bonus`，`collaboration`=`P|A`，`capability_confirmed` 布尔。未写 = 默认 + P。bonus 或 A 必须 `capability_confirmed=true`，否则 `GEAR_VIOLATION`。
-- `hook_supervision`：默认 false。为 true 时，`audit-round` 收口需要宿主 stop 的完整 start/end 对：Cursor / Codex / Zcode 看 `hook-runs.jsonl` 里来自 `cursor-stop` / `codex-stop` / `zcode-stop` 的对；dsh 看 `dsh-runs.jsonl` 里来自 `dsh-stop` / `dsh-subagent-end` 的对（接线见 [hooks.md](hooks.md)、[dsh-evidence.md](dsh-evidence.md)）。`--source manual` 不算。缺证据 → `HOOK_EVIDENCE_MISSING`。宿主没有 hook 能力时才不要打开此开关。
-- `subagents`：每条 `run_id`、`task_id`、`window`、`role`（`worker|scout|verifier`）、`allowed_paths`。路径必须落在该任务 `allowed_paths` 内。同文件并发、重复 `run_id`、同一窗既 worker 又 verifier → `PARALLEL_FAIL`。**子代理身份不等于正式窗号**：它只是某个 C/M 窗的执行载体。
+- `hook_supervision`：默认 false。为 true 时，`audit-round` 收口需要 `hook-runs.jsonl` 里来自 `cursor-stop` / `codex-stop` / `zcode-stop` 的完整 start/end 对。`--source manual` 不算。缺证据 → `HOOK_EVIDENCE_MISSING`。无 hook 宿主不要打开此开关。
+- `subagents`：每条 `run_id`、`task_id`、`window`、`role`（`worker|scout|verifier`）、`allowed_paths`。路径必须落在该任务 `allowed_paths` 内。同文件并发、重复 `run_id`、同一窗既 worker 又 verifier → `PARALLEL_FAIL`。
 
 不要整份覆盖 `manifest.json` 来改状态。不要把显式 `independent_verification` 写成与 `risk` / `attempt` / `verification_required` 相反的值。
 
@@ -181,11 +110,12 @@ py -3 scripts/taskctl.py handoff
 py -3 scripts/taskctl.py init TASK-001
 py -3 scripts/taskctl.py gate TASK-001
 py -3 scripts/taskctl.py audit-round
-py -3 scripts/taskctl.py reopen TASK-001 --reason "人工验收发现遗漏"
+py -3 scripts/taskctl.py reopen TASK-001 --block-id BLOCK-UI-001 --reason "人工验收发现遗漏" --actor M1
+py -3 scripts/taskctl.py reopen TASK-001 --block-id BLOCK-UI-001 --new-owner C1 --reason "第二次同根因失败" --actor M1
+py -3 scripts/taskctl.py reassign TASK-001 --owner C1 --reason "REASSIGN_REQUIRED 后交接" --actor M1
 py -3 scripts/taskctl.py status
 py -3 scripts/taskctl.py status --markdown
 py -3 scripts/taskctl.py status --markdown --write
-py -3 scripts/taskctl.py round-close
 py -3 scripts/taskctl.py --root <项目根> migrate-project --destination scripts/taskctl.py --force
 py -3 scripts/taskctl.py --root <项目根> migrate-project --check
 py -3 scripts/taskctl.py transition TASK-001 in_progress --actor M1
@@ -197,32 +127,6 @@ py -3 scripts/taskctl.py transition TASK-001 verified --actor verifier
 ```
 
 `brief` / `handoff` / `status --markdown` 默认不改 `.task/` 状态。`--write` 只覆盖 `docs/TASK-STATUS.md`。无 `.task/` 时 `--markdown` → `STATUS_FAIL: no .task`。`--role` 仅 `worker|scout|verifier`。缺失 task 或非法 role → `BRIEF_FAIL`。无 `.task/` 跑 `handoff` → `HANDOFF_FAIL`。
-
-**`status` 是只读视图（0.35）**：它**不执行任何 shell 命令**，只从 `.task/<task>/rerun.json` 读上次真跑的结论。可能显示 `GATE_PASS` / `GATE_FAIL` / `GATE_NOT_RUN`（还没跑过）/ `GATE_STALE`（报告已过期）。它**不是**收口依据。要真跑：`gate TASK-xxx --full`、`audit-round`，或显式 `status --deep`（会逐任务执行回归命令，可能几分钟）。
-
-**`round-close`（0.35）**：仅当整轮任务全部 `done` **且** `audit-round` 通过，才把 `.task/round.json` 归档到 `.task/rounds/<round_id>.json` 并移除原位文件；未完成任务或审计未过一律 `ROUND_CLOSE_FAIL`，原位文件保持不动。归档成功后再跑 `round-init` 开下一轮。**禁止手工删除 `round.json`。**
-
-## `.task/` schema 版本与 fail closed（0.35）
-
-`manifest.json` 与 `round.json` 有顶层 `schema_version`（当前 `1`）。它与 `skill_version` **分开**：技能升版不一定动 schema。
-
-| 读到 | 行为 |
-|---|---|
-| 等于本宿主版本 | 正常 |
-| 缺失 / 更低 | 视为旧文件，走迁移兼容路径（标注 `LEGACY_UNSCOPED`） |
-| **更高** | `UNSUPPORTED_SCHEMA`，**fail closed**：只允许查看，禁止改状态、禁止收口、禁止任何写操作 |
-
-fail closed 覆盖所有写子命令（`init` / `round-init` / `round-close` / `receipt` / `request-check` / `assign-verifier` / `sync-worker-route` / `transition` / `reopen` / `attempt` / `reassign` / `hook-audit` / `migrate-project`）；只读子命令（`status` / `gate` / `audit-round` / `brief` / `packet` / `handoff` / `selftest`）仍可用。`gate` 与 `audit-round` 在更高 schema 下也会失败，因此**不能收口**。
-
-**反方向：`SCHEMA_REGRESSION_RISK`** —— `UNSUPPORTED_SCHEMA` 防"未来版写的数据被现在这版乱改"，但防不住"现在这版写的数据被**更旧的宿主**乱改"：旧宿主不认识 `schema_version`，既不会维护它也不报错。判据（机械可查）：`.task/skill-lock.json` 已声明契约版本 N，而**活动轮或某个任务目录**的 `schema_version` < N → 拒写，只读命令仍可用。真正的历史项目（锁里也无版本声明，N=0）继续兼容。契约只在写了新文件后升级（`init` / `round-init` / `migrate-project`），**读取路径绝不自动补写**。
-
-## 收口检查：不可重放命令与过期报告（0.35）
-
-- **`UNREPLAYABLE_COMMAND`** —— Full Gate 会先对 `tests[].command` 与 `requirements[].verify_cmd` 做**形态**预检，然后才逐字重放。命中的形状：`<占位符>`（但不是 `2>&1` / `> out.txt` 这类合法重定向）、`**` / ` ``` ` / `…`、中文或全角说明文字、没有可识别运行器前缀、引用了像文件却不存在且属本任务范围（`_tools/` 或带扩展名的相对路径）的路径。
-  它是**验收证据错误**：阻断收口，**不推进卡点计数**、不算一次失败。
-  **边界**：不做二进制存在性判定——本机没装 `pytest` 时 `pytest -q tests/` 仍然算可重放。临时探针请写进报告的 `note`，`tests[]` 只放可执行且可重放的命令。
-- **`STALE_REPORT`** —— 报告自称的 `changed_files` 在报告之后又被改过 → 报明码。判据是 `rerun.json` 里记录的**文件内容指纹**（SHA256 前 16 位），**不用 mtime**：文件系统时间戳粒度可能只有秒级，同秒写入会假阴性。首次 Gate 只建立基线，不报过期。
-  **分层**：日常 `gate`、例行 `audit-round`、hook 触发的审计都只**提示**（`RESULT PASS` 不变、不进卡点）；**只有 `round-close` 归档时阻断**。它只**提示**报告可能旧了，**不能**声称已保证验收新鲜——指纹基线是"上次 Gate 时的工作区内容"，门禁无法知道报告是谁写的、什么时候写的。
 
 `migrate-project` 覆盖已有 `scripts/taskctl.py` 必须 `--force`，且先备份。报告与 lock 写完后再 `--check`。未 `MIGRATE_READY` 不要开发新功能。`--check` 不要求项目内所有任务 Full Gate PASS，只要求迁入的脚本能跑门禁、Hook 不改状态、负向路径仍被拒绝。
 

@@ -1,6 +1,6 @@
 {
   "_readme": [
-    "dsh hooks for the multi-window-m-035 skill (方案 B: dsh as a first-class host).",
+    "dsh hooks for the multi-window-m-033 skill (方案 B: dsh as a first-class host).",
     "",
     "Mount the Claude Code bridge, NOT the Codex bridge: only this dialect exposes",
     "SubagentStop, which is the 'a delegated window ended' signal this skill needs.",
@@ -11,6 +11,9 @@
     "    config:",
     "      configPath: <absolute path to this file>",
     "  (a relative configPath resolves from the directory that launched dsh)",
+    "",
+    "All three commands invoke the bridge from this skill's own absolute path,",
+    "so a project needs no local .dsh-hooks copy of it.",
     "",
     "Every command below must exit 0. dsh's Stop hook is a serial listener whose",
     "blocking result forces another model turn; stop_hook_active is always false and",
@@ -23,7 +26,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "py -3 \"${CLAUDE_PROJECT_DIR}\\.dsh-hooks\\dsh-hook-bridge.py\" --record --status \"${CLAUDE_PROJECT_DIR}\\.task\\dsh-hook-status.json\""
+            "command": "py -3 \"{SKILL_ROOT}\\scripts\\dsh-hook-bridge.py\" --record --status \"${CLAUDE_PROJECT_DIR}\\.task\\dsh-hook-status.json\""
           }
         ]
       }
@@ -33,7 +36,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "py -3 \"C:\\Users\\user\\.dsh\\skills\\multi-window-m-035\\scripts\\dsh-hook-bridge.py\""
+            "command": "py -3 \"{SKILL_ROOT}\\scripts\\dsh-hook-bridge.py\""
           }
         ]
       }
@@ -44,7 +47,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "py -3 \"C:\\Users\\user\\.dsh\\skills\\multi-window-m-035\\scripts\\dsh-hook-bridge.py\""
+            "command": "py -3 \"{SKILL_ROOT}\\scripts\\dsh-hook-bridge.py\""
           }
         ]
       }

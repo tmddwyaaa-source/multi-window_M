@@ -1,2 +1,0 @@
-R3: JSON field "window" is the file token CB1; "owner_window" is the real window id C1.
-They are not the same value. Reports to M1 use window id C1, not CB1.
