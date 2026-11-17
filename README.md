@@ -1,227 +1,163 @@
 # Multi-Window M
 
-> 长期 AI 项目的协作流程：**并行执行、可重跑验收、唯一收口。**
+**把长需求交给 M1，让多个 AI 窗口分工推进，用真实验收收口。**
 
-`Multi-Window M` 把彼此隔离的 Agent 聊天窗口，变成一个可以持续推进、验证、交接和恢复的项目流程。
+适合持续数天、数周的开发项目：游戏、网站、工具，以及有明确文件和验收标准的长期任务。
 
-它不是为了“开更多 Agent”。它解决的是长期项目里最危险的问题：工人说完成了，主窗口也相信了，最后只能由用户人工发现遗漏。
+> **当前推荐基线：0.33。** 默认分支已恢复本地保留的 Codex 0.33，另附 DSH 0.33 适配版。0.34～0.36 后续迭代按维护者决定退出推荐范围，不能因版本号更大而视为升级。历史保留供追溯，见 [版本说明](VERSION-POLICY.md)。
 
-## 你最终得到什么
+[独立安装包](https://github.com/tmddwyaaa-source/multi-window_M/releases/latest) · [下载当前仓库](https://github.com/tmddwyaaa-source/multi-window_M/archive/refs/heads/main.zip) · [默认版规则](SKILL.md) · [DSH 适配版](compatibility/dsh/) · [复制话术](templates.md)
 
-- **并行，但不混乱**：长期模块由常驻 M 窗维护，短任务由临时 C 窗处理；每个任务都有明确路径边界。
-- **完成必须有证据**：工人交付磁盘文件和可运行的验收命令；M1 必须在自己的窗口重跑。
-- **风险匹配流程**：低风险首次任务走短路径；高风险、重开或多次失败任务必须独立验收。
-- **可恢复、可交接**：任务状态、原始需求映射、验证记录和下一步都在项目里，不依赖某个聊天窗口的记忆。
-- **自动化不越权**：Hook 记录“检查是否被触发”，子代理可以加速；两者都不能替 M1 标记 `done`。
+## 为什么创建它
 
-## 它属于什么
+多个聊天窗口往往互相看不见。开窗越多，任务传达、文件冲突、遗漏和交接也越难管理。最难发现的情况是：执行窗口说完成了，主窗口也放行了，直到用户体验时才发现小需求没做。
 
-它同时包含工作流、多 Agent 协作和自动化，但**主体是工作流**：
+Multi-Window M 把这件事组织成可留下记录的工作流：
 
-- `M1 → 派工 → 工人 → 验收 → done` 是工作流；
-- M1、M2、C1、verifier、子代理是多 Agent 协作；
-- `taskctl.py`、Full Gate、Hook、状态生成、迁移检查是自动化。
+- **M1 管全局。** 对齐需求，拆任务、划路径、安排批次、查收和集成。
+- **执行窗口各守一块。** 长期模块交给常驻 M 窗，临时工作交给 C 窗；独立部分并行推进。
+- **完成有证据。** 工人交文件和自测结果，M1 在自己的窗口重跑验收。
+- **长线可接班。** 需求、状态、边界、证据和下一步落盘，减少对聊天记忆的依赖。
 
-它的设计顺序是：
+效果应由真实项目衡量：你是否少操心、并行是否有效、遗漏是否减少。脚本 PASS 不等于游戏好玩或所有功能正确。
 
-> 先有清晰工作流；
->
-> 再把能并行的部分交给多个 Agent；
->
-> 最后把重复检查交给自动化。
+## 你实际怎么用
 
-工作流规定任务如何从需求走到完成；多 Agent 提供并行执行和独立复核；自动化负责执行重复规则、留下证据。三者都服务于同一个目标：让长期项目持续推进，而不是让更多窗口制造更多混乱。
+你可以一次写很长的需求，不必自己先拆任务：
 
-## 为什么需要它
+> 我想给这个游戏加暂停、升级选项和存档；暂停时怪物和计时器都应停止；升级不能重复出现；存档需要能恢复。先看看你的理解，我们对齐后再开工。
 
-| 普通多窗口协作的常见问题 | Multi-Window M 的做法 |
-|---|---|
-| 工人只回复“已完成” | 必须交文件、证据与可重跑命令 |
-| 主窗口忙碌或偷懒，直接放行 | M1 本窗重跑 Full Gate 后才能收口 |
-| 小任务与高风险任务一刀切 | 风险策略自动选择短路径或独立验收 |
-| 不同窗口聊天记录互相不可见 | `brief` 生成派工简报，`handoff` 生成接班简报 |
-| Registry、日志和任务状态互相打架 | `.task/` 是唯一状态源；状态文档由脚本再生 |
-| Hook 看似运行，无法证明 | 记录 `run_id`、宿主、来源与 start/end 成对日志 |
-| 多 Agent 同时改同一文件 | `allowed_paths`、子代理绑定与并发检查阻止越权 |
+1. **和 M1 对齐。** 必要的几轮对话确认目标、限制、必须项和验收方式。
+2. **让 M1 安排。** 拆任务、登记模块和文件边界、安排本轮窗口；共享文件和强依赖分批做。
+3. **按安排开窗。** 每个窗口加载同一适配版后，你只需说：“我是 M2，请完成指示任务。”窗口从同一项目的落盘材料/生成简报获取任务。
+4. **通知查收。** 回到 M1 说：“M2、C1 已完成，请查收。”
+5. **M1 验收与集成。** 重跑检查，按风险策略核对必要的独立验收；未通过则打回。整轮通过后收口，能打开时展示项目供你体验。
 
-## 正常如何运作
+默认方式需要你开窗、传递完成信号；窗口不会自行叫醒 M1。“自动安排”指 M1 规划任务和批次，不是后台无人值守调度。
 
 ```mermaid
 flowchart TD
-    U["用户<br/>提出目标、确认最终体验"] --> M1["M1：唯一收口者<br/>拆需求、派工、集成、签署完成"]
-
-    M1 --> T[".task 任务事实层<br/>原始需求 → R1/R2/R3<br/>风险、路径、状态、证据"]
-    T --> B["brief<br/>生成同一份派工简报"]
-
-    B --> W["工人窗：M2-M10 或 C1-C4<br/>只改允许路径<br/>自测后提交 worker_done"]
-    W --> G["taskctl / Full Gate<br/>重跑命令、核证据、核 diff、核需求覆盖"]
-
-    G --> R{"唯一风险策略"}
-    R -->|"low 且首次"| I["M1 集成<br/>worker_done → integrated"]
-    R -->|"medium/high、重开或失败 ≥2 次"| V["独立验收窗<br/>C2 与 C1 分离；只验证<br/>verifying → verified"]
-    V --> G
-    I --> D["M1 最终收口<br/>Full Gate 通过 → done"]
-    G -->|"验证后通过"| D
-
-    H["Stop Hook：旁路监督<br/>记录 start/end、run_id、host"] -. "不改状态、不派工、不标 done" .-> G
-    D --> L["TASK-STATUS / RECEIPT-LOG / handoff<br/>可追溯、可接班、可继续"]
-    L --> U
-
-    G -->|"失败或规则冲突"| K["BLOCKERS<br/>停止盲改，回到斥候 → 主力 → 搜剿"]
-    K --> M1
+    U[用户：长需求] --> A[M1：对齐目标与验收]
+    A --> B[M1：任务落盘、划路径、安排批次]
+    B --> O[用户：打开本轮窗口]
+    O --> M[常驻 M2～M10：长期模块]
+    O --> C[临时 C 窗：短任务，本轮最多 4 个]
+    M --> W[实现、自测、交文件与证据]
+    C --> W
+    W --> S[用户：通知 M1 查收]
+    S --> R[M1：本窗重跑，按策略核独立验收]
+    R -->|失败| F[明确打回项、安排修复]
+    F --> W
+    R -->|通过| D[M1：集成、收口、展示项目]
+    D --> E[用户：体验与下一轮反馈]
 ```
 
-这张图的关键不是流程更长，而是把四件事拆开：**实现、验收、收口、监督**。没有一个 Agent 可以同时单方面决定“我做完了，而且项目也完成了”。
+## 角色定位：按需开窗
 
-## 角色不是一堆部门
+**M1：项目主导窗口。** 对齐需求、规划、派工、处理冲突、验收和最终收口。默认负责管理与集成；亲自改子模块需用户点名同意。
 
-Multi-Window M 使用的是四种不同维度；它们不能混为一谈。
+**M2～M10：常驻模块窗口。** 维护战斗、界面、存档等长期模块。不必一次开齐所有编号，已完成模块无需常开。
 
-| 维度 | 单位 | 为什么存在 | 做什么 |
-|---|---|---|---|
-| 空间 / 责任边界 | M1、M2-M10、C1-C4 | 让长期模块稳定归属、短任务及时关闭 | M1 收口；常驻 M 维护长期模块；临时 C 完成短任务 |
-| 工作阶段 | 斥候、主力、搜剿 | 防止“没调查就盲改”或“实现者自己给自己放行” | 调查 → 实现 → 挑错 |
-| 权限身份 | worker、verifier、M1 | 把实现权、验收权、收口权分开 | worker 提交实现；verifier 独立验证；M1 集成并标 `done` |
-| 自动化组件 | `taskctl.py`、Hook、子代理 | 提高可靠性和效率，但不夺走决策权 | 脚本裁决；Hook 记账；子代理加速已有任务 |
+**C1、C2……：临时窗口。** 处理一批数据、一个明确修复等短任务；本轮最多四个临时 C 窗，收口后关闭，下一轮号码可复用。
 
-**M1 不是“最强工人”，而是唯一负责确认项目事实的人。**
+**斥候 / 主力 / 搜剿：工作阶段。** 不是三个新增部门。信息未知或冲突时只读调查；范围明确时直接实现；之后验收挑错。策略要求独立检查时，实现者不能兼任自己的独立验收者。
 
-**verifier 不是常设部门，而是在策略要求时出现的独立检查身份。v0.34 将它正式派到另一个 M/C 窗：例如 C1 实现、C2 验收；C2 不会接管 C1 的 owner。**
+**用户：目标与体验的判断者。** 提需求、对齐方向、开窗传信号、体验结果。普通规划和资料编写交给 M1。
 
-**斥候 / 主力 / 搜剿不是新窗口，而是同一窗口在不同阶段的工作方式。**
+**脚本与 Hook：重复检查的辅助。** `taskctl.py` 管理状态、生成简报和运行检查。Hook 只是宿主事件触发器，不派工、不改状态、不标完成。
 
-## 两条合法收口路径
+## 例子：游戏的一轮开发
 
-所有任务都要过最低门禁；差别只在是否需要独立验收。
+这轮需要暂停、升级界面和存档：M1 先确认行为与接口，再安排 M2 改暂停逻辑、M3 改升级界面、C1 完成边界明确的存档任务。如果三者都改同一个入口文件，M1 应拆批次或让一个窗口主改，不能为了并行互相覆盖。
+
+“暂停完成”的证据应覆盖计时和怪物行为，不能只查文件存在。M1 重跑后，你仍需打开游戏体验。这个例子展示分工，skill 本身不自带游戏功能。
+
+## 0.33 的检查和返工
+
+- 已确认需求映射到任务要求，避免只在聊天里承诺。
+- 工人交文件、证据与可重跑命令；M1 本窗查收。
+- 低风险且 `attempt < 2`、未强制独立验收的任务走短路径；其余按策略独立验收。
+- 同一卡点绑定 `block_id`：第一次原负责人修复；第二次换真正不同的合格负责人并记交接；第三次硬停、写阻塞记录，交 M1 / 用户决定。
+- 启用 `.task/` 后以其作为状态来源，状态文档由脚本生成。
+
+0.33 已有独立验收策略，但**没有** 0.34 的 `assign-verifier` / `verifier_assignments` 双路由命令，也没有后续 `packet`、合同基线、`round-close` 功能。不要套用后续版本教程。
+
+需求映射、路径边界和证据检查可发现部分错误；不保证发现全部未申报改动，也不保证识别低质量测试。实际验收须覆盖需求行为。
+
+## 安装与兼容范围
+
+### 选择一份安装
+
+**Codex：默认版。** 使用根目录的 `SKILL.md`、`templates.md`、`CHANGELOG.md`、`scripts/`、`references/`，放到技能文件夹 `multi-window_M-0.33`，例如已有约定下的 `~/.codex/skills/multi-window_M-0.33/`。不要把嵌套的 `compatibility/` 一起安装。当前宿主采用其他发现路径时，应按其实际入口加载完整文件夹。
+
+**DSH：独立适配版。** 复制 [compatibility/dsh/multi-window-m-033/](compatibility/dsh/multi-window-m-033/) 整个文件夹至 `~/.dsh/skills/`，保留目录名 `multi-window-m-033`。它是 0.33 加 DSH 接线适配和已记录补丁，不是 0.34。详见 [DSH 说明](compatibility/dsh/README.md)。
+
+**Cursor：默认版的多窗口流程。** 可将默认文件集放入 `~/.cursor/skills/multi-window_M-0.33/` 并显式加载；有 Cursor Hook 历史说明，其中引用的外部适配器不在默认包内，需自行配置并验证。
+
+**Zcode：默认流程与接线参考。** 按当前 Zcode 的实际技能安装方式加载默认文件集；保留 `zcode-stop` 约定。未在本次发布中验证当前宿主的完整闭环，不宣称自动安装或全面兼容。
+
+“有基础流程或接线说明”不等于“四个平台所有版本全面实测”。默认从人工路由开始，仅在本窗确认能力后才用子代理协作。下载技能不会自动接上 Hook。
+
+### 给 agent 的开场话术
+
+安装完整文件夹，在同一项目主窗口明确加载所选版本，再说：
 
 ```text
-低风险、attempt < 2：
-pending → in_progress → worker_done → integrated → done
-
-中高风险、人工重开、attempt ≥ 2，或明确要求独立验收：
-pending → in_progress → worker_done → verifying → verified → integrated → done
+请读取已安装的 Multi-Window M 0.33 skill。你是 M1。
+先和我对齐需求，确认后自主拆任务和窗口批次。
+窗口由我打开；不要假设能看到其他窗口的聊天。
+完成后由你在本窗重跑验收，再集成和收口。
 ```
 
-策略由 `taskctl.py` 的 `verification_policy()` 唯一决定。若风险、重试次数或 manifest 自相矛盾，流程停止并输出 `POLICY_CONFLICT`，不会让用户临时在两套规则之间选择。
-
-## 适用场景
-
-非常适合：
-
-- 持续数天、数周或更久的 AI 辅助开发项目；
-- 多个聊天窗口或 Agent 彼此隔离、不能可靠共享上下文的环境；
-- 代码、配置、数据、文档等有明确文件边界的项目；
-- 需求会追加、任务会重开、需要换 Agent 或隔几天接着做的项目；
-- 想并行推进，但不能接受“看起来完成、实际漏做”的项目。
-
-不适合：
-
-- 只修改一两行、一次对话即可完成的小任务；
-- 无法定义验收标准、完全依赖主观审美的工作；
-- 希望无人监督地自动产出并直接上线的生产流水线；
-- 只追求速度、完全不在意证据、交接和验收成本的任务。
-
-## 快速开始
-
-### 1. 安装隔离副本
-
-升级测试时保留带版本号的独立目录，避免覆盖正在使用的版本：
-
-| 宿主 | 建议目录 | 调用 |
-|---|---|---|
-| Cursor | `~/.cursor/skills/multi-window_M-0.34/` | `/multi-window_M-0.34` |
-| Codex | `~/.codex/skills/multi-window_M-0.34/` | `/multi-window_M-0.34` |
-
-仓库目录始终为 `multi-window_M`；当前版本以 [`SKILL.md`](SKILL.md) 的 `version` 字段为准。
-
-### 2. 选择协作方式
-
-- 默认是 **P：人工路由多窗口**。用户负责开 M/C 窗并把查收信号送回 M1。
-- 只有本窗实际确认可收回子代理结果后，才可使用 **A：M1 子代理半自动协作**。
-- 无论哪种方式，M1 本窗重跑、风险策略和最终收口纪律都不改变。
-
-### 3. 让 M1 建立任务事实
-
-M1 将原始需求映射到 `source_refs` 与 R 项，声明 `allowed_paths`、风险和验收方法；再用 `brief` 生成派工简报，而不是靠手写转述。
+执行窗也加载同一适配版，然后说：
 
 ```text
-py -3 scripts/taskctl.py --root <项目根> brief TASK-001 --role worker
+我是 M2，请完成本轮指示任务。
 ```
 
-若任务需要独立验收，M1 还要正式派出不同的验收窗；不能把实现任务从 C1 挪到 C2 来冒充派工：
+详细话术见 [templates.md](templates.md)。项目资料由 M1 准备，不要求用户手填任务 JSON。
+
+### Hook 和已有项目
+
+默认版见 [hooks.md](references/hooks.md)，DSH 见 [专用接线说明](compatibility/dsh/multi-window-m-033/references/dsh-evidence.md)。历史配置须替换本机路径并验证实际事件；无有效 Hook 时走默认流程，不开启监督声明。
+
+新项目可直接从 0.33 开始。**已被 0.34～0.36 修改的项目，不要直接用旧脚本覆盖或自动降级。** 本次恢复技能发布基线，没有新格式回退转换器。先备份，在副本核对任务状态和字段；已有新版本 Hook 也不会自动切换。
+
+## 工具入口（给 M1 / 维护者）
+
+需要 Python 3；Git 项目可用相关工作区检查。原脚本和测试采用 Windows `py -3` 启动方式，其他系统需按环境调整，不宣称本次已全面验证跨平台。
 
 ```text
-py -3 scripts/taskctl.py --root <项目根> assign-verifier TASK-001 --window C2 --actor M1
-py -3 scripts/taskctl.py --root <项目根> brief TASK-001 --role verifier --window C2
-```
-
-### 4. 工人执行，M1 查收
-
-工人只在允许路径内实现并跑自测；用户或已确认的协作能力把“已完成，请查收”送回 M1。M1 重跑验收命令和 Full Gate，然后使用 `transition` 按合法路径收口。
-
-```text
-py -3 scripts/taskctl.py --root <项目根> audit-round
-py -3 scripts/taskctl.py --root <项目根> transition TASK-001 integrated --actor M1
-py -3 scripts/taskctl.py --root <项目根> transition TASK-001 done --actor M1
-```
-
-中高风险、重开或重复失败任务必须先经过 verifier 的 `verifying → verified`。Full Gate 会核对：C2 已被正式指派、C2 不等于 C1、验收报告的 reviewer 确实是 C2。
-
-### 5. 交接或恢复时，不靠聊天记忆
-
-```text
-py -3 scripts/taskctl.py --root <项目根> handoff
-py -3 scripts/taskctl.py --root <项目根> status --markdown --write
-```
-
-新 M1 先读生成的接班简报；`docs/TASK-STATUS.md` 由 `.task/` 再生，禁止手改。
-
-## 门禁、Hook 与子代理的边界
-
-- **Full Gate**：重跑可识别的验收命令、检查 evidence 路径，并在 Git 项目中核对实际改动是否越界。
-- **Hook**：只记录某次 Stop 是否触发检查。它不派工、不改状态、不标 `done`。
-- **子代理**：只加速现有 M/C 任务，必须绑定任务、窗口、路径和 `run_id`；不能同时做工人和独立验收者。
-- **用户实测**：仍不可替代。门禁证明“声明的需求与证据通过”，用户确认产品是否真正符合意图。
-
-Hook 接线及宿主能力确认见 [`references/hooks.md`](references/hooks.md)。任务 schema、G0-G3、状态迁移和失败 token 见 [`references/task-gate.md`](references/task-gate.md)。
-
-## 旧项目迁移
-
-升级旧项目时，先备份、写迁移报告与版本 lock，再检查迁移健康状态；未出现 `MIGRATE_READY` 前不要继续开发新功能。
-
-```text
-py -3 <本技能目录>\scripts\taskctl.py --root <项目根> migrate-project --destination scripts/taskctl.py --force
-py -3 <本技能目录>\scripts\taskctl.py --root <项目根> migrate-project --check
-```
-
-`--root` 必须放在子命令前面。
-
-## 自检与仓库结构
-
-```text
+# 在默认版目录自检
 py -3 scripts/taskctl.py selftest
+
+# 以下假设 M1 已准备项目任务；--root 在子命令之前
+py -3 scripts/taskctl.py --root <项目根> brief TASK-001 --role worker
+py -3 scripts/taskctl.py --root <项目根> gate TASK-001
+py -3 scripts/taskctl.py --root <项目根> status --markdown --write
+py -3 scripts/taskctl.py --root <项目根> handoff
 ```
 
-| 路径 | 用途 |
-|---|---|
-| [`SKILL.md`](SKILL.md) | 当前工作规则 |
-| [`CHANGELOG.md`](CHANGELOG.md) | 历史版本记录；不参与当前决策 |
-| [`templates.md`](templates.md) | 可直接复制的开场、派工与交接话术 |
-| [`scripts/taskctl.py`](scripts/taskctl.py) | 门禁、状态迁移、简报、接班与迁移工具 |
-| [`scripts/`](scripts/) | 正向与负向自检 |
-| [`references/task-gate.md`](references/task-gate.md) | G0-G3、schema、状态机与策略表 |
-| [`references/performance.md`](references/performance.md) | 按需斥候、短回执与有界读取的性能试验 |
-| [`references/hooks.md`](references/hooks.md) | Codex、Cursor、Zcode 的 Hook 接线 |
-| [`testdata/`](testdata/) | 沙盒与测试记录 |
+`gate TASK-001` 为完整检查，`--basic` 为基础检查。策略和完整状态路径见 [task-gate.md](references/task-gate.md)。脚本自检不代替真实多窗口验证。
 
-## 当前版本与边界
+## 它属于什么、适合什么
 
-当前版本：**0.34**。它在 0.32 的窗口身份、0.33 的三次卡点治理基础上，修复了独立验收的正式派工问题：一个任务可由 C1 实现、C2 验收，M1 仍是唯一收口者。
+主体是**工作流**：规定需求怎样走到完成；多窗口 / 多 agent 提供分工；脚本和 Hook 承担部分自动化。默认不自动开窗、不负责无人值守上线。
 
-0.34 新增 `verifier_assignments`、正式 verifier brief、验收窗回执，以及对缺验收窗、冒名 reviewer、worker 路由与 owner 冲突的 Gate 拒绝。C1→C2→M1 的完整闭环已通过脚本正反测试与真实窗口测试；具体变更见 [`CHANGELOG.md`](CHANGELOG.md)。
+适合长期、模块边界明确、会追加需求或换窗接班的项目。一次小修改通常无需整套流程；没有验收标准的纯主观工作，也很难用机械检查判断质量。
 
-Multi-Window M 不承诺“Agent 永远不会出错”。它承诺的是：错误不应轻易被伪装成完成；每个 `done` 都应能回到需求、文件、命令和验收记录重新检查。
+本次只恢复 0.33 与整理分发，没有加入后续规则。旧格式沙盒及嵌入脚本移出默认下载，在 Git 历史保留，避免被误当成当前正例。
 
-## 许可证与隐私
+## 文件导航
 
-不要提交含密钥的 `.env`、Hook 诊断日志或 `.task/hook-runs.jsonl`。这些日志已在 [`.gitignore`](.gitignore) 中忽略。
+- [SKILL.md](SKILL.md)：默认版 0.33 规则。
+- [templates.md](templates.md)：开场、派工、查收、交接话术。
+- [scripts/taskctl.py](scripts/taskctl.py)：原 0.33 任务和检查工具。
+- [task-gate.md](references/task-gate.md)：状态、策略、证据与命令。
+- [hooks.md](references/hooks.md)：历史宿主接线参考。
+- [performance.md](references/performance.md)：效率试验，不作为已证明收益。
+- [DSH 适配版](compatibility/dsh/)：独立安装包与说明。
+- [VERSION-POLICY.md](VERSION-POLICY.md)：来源、撤回版本与兼容边界。
+- [CHANGELOG.md](CHANGELOG.md)：本次恢复记录和 0.33 及更早历史。
+
+请勿提交密钥、个人聊天记录或 Hook 日志。报告问题时注明适配版、宿主和项目版本。

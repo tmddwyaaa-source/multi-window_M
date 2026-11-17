@@ -96,7 +96,7 @@ py -3 scripts/taskctl.py --root <项目根> status --markdown --write
 把 `handoff` 与 `docs/TASK-STATUS.md` 当接班状态源。然后再：
 
 ```text
-/multi-window_M-0.34
+/multi-window_M-0.33
 我是 M1。已阅读 handoff 生成物。按未闭环项继续；查收仍须本窗重跑；M1 唯一收口。
 先自报挡位。不要报加分（除非本窗已确认并点名）。不要手写转述代替 brief。
 ```
@@ -108,11 +108,10 @@ M1 写好 manifest / round 后，不要手写开工长文。生成简报并**原
 ```text
 py -3 scripts/taskctl.py --root <项目根> brief TASK-001 --role worker
 py -3 scripts/taskctl.py --root <项目根> brief TASK-001 --role scout
-py -3 scripts/taskctl.py --root <项目根> assign-verifier TASK-001 --window C2 --actor M1
-py -3 scripts/taskctl.py --root <项目根> brief TASK-001 --role verifier --window C2
+py -3 scripts/taskctl.py --root <项目根> brief TASK-001 --role verifier
 ```
 
-`--role` 只能是 `worker` / `scout` / `verifier`。中高风险任务必须先正式指派不同 verifier；verifier brief 会同时写明“验收窗 C2 / 实现 owner C1”。不存在的 task、非法 role 或错误窗号会被拒绝。`brief` 与 `handoff` 不改状态。
+`--role` 只能是 `worker` / `scout` / `verifier`。不存在的 task 或非法 role 会被拒绝。`brief` 与 `handoff` 不改状态。
 
 工人窗仍用下面的简版话术作身份句；任务细节以 brief 生成物为准。
 
@@ -143,7 +142,7 @@ py -3 scripts/taskctl.py --root <项目根> brief TASK-001 --role verifier --win
 ### 斥候
 
 ```text
-/multi-window_M-0.34
+/multi-window_M-0.33
 我是 {窗号}。当前角色：斥候（只调查，禁止改任何文件）。
 请读 {项目路径}/docs/MODULE-REGISTRY.md 中【{窗号}】章节。
 主题：{一句话}
@@ -162,7 +161,7 @@ py -3 scripts/taskctl.py --root <项目根> brief TASK-001 --role verifier --win
 ### 主力
 
 ```text
-/multi-window_M-0.34
+/multi-window_M-0.33
 我是 {窗号}。当前角色：主力（只实现，最小改动）。
 请读 Registry 中【{窗号}】章节。依据斥候报告（若有则以下为准）：
 ---
@@ -183,7 +182,7 @@ py -3 scripts/taskctl.py --root <项目根> brief TASK-001 --role verifier --win
 ### 搜剿 — 子窗口自检
 
 ```text
-/multi-window_M-0.34
+/multi-window_M-0.33
 我是 {窗号}。当前角色：搜剿（禁止修改实现代码）。
 卡点签名：{现象 + 位置/测试}
 本轮循环计数：{k}/4
@@ -203,7 +202,7 @@ py -3 scripts/taskctl.py --root <项目根> brief TASK-001 --role verifier --win
 ### M1 最终查收
 
 ```text
-/multi-window_M-0.34
+/multi-window_M-0.33
 我是 M1。当前角色：搜剿（只验收，禁止顺手改子模块来“修完”）。
 用户汇报：{窗号} 已完成，请查收。（或：所有窗口已完成 = 只核本轮派工名单）
 
@@ -404,18 +403,17 @@ D:\gongju\{工具名}-{版本号}/
 }
 ```
 
-当前规则：`reviewer` 必须是 `verifier_assignments` 正式指派的独立窗口，不能等于 `worker-report.window` 或 task owner；`changed_files` 必须全部落在 `manifest.json` 的 `allowed_paths` 内；`evidence[].path` 必须真实存在。Full Gate 会重跑 `verify_cmd` / 可执行的 `verify` / `tests[].command`，并写 `rerun.json`。**`manifest.json`、`rerun.json`、`verify-report.json` 未列入工人 `changed_files` 不算漏报。** 任务状态写在 manifest，窗口状态写在 round.json，不要混写。状态变更必须通过 `taskctl.py transition`，直接编辑 `status` 或整份覆盖 manifest 不算有效收口。策略冲突输出 `POLICY_CONFLICT`。细节见 `references/task-gate.md`。
+当前规则：`reviewer` 必须是独立窗口，不能等于 `worker-report.window`；`changed_files` 必须全部落在 `manifest.json` 的 `allowed_paths` 内；`evidence[].path` 必须真实存在。Full Gate 会重跑 `verify_cmd` / 可执行的 `verify` / `tests[].command`，并写 `rerun.json`。**`manifest.json`、`rerun.json`、`verify-report.json` 未列入工人 `changed_files` 不算漏报。** 任务状态写在 manifest，窗口状态写在 round.json，不要混写。状态变更必须通过 `taskctl.py transition`，直接编辑 `status` 或整份覆盖 manifest 不算有效收口。策略冲突输出 `POLICY_CONFLICT`。细节见 `references/task-gate.md`。
 
 ### 本轮状态 round.json
 
 ```json
 {
   "round_id": "ROUND-001",
-  "expected_windows": ["M4", "C1", "C2"],
+  "expected_windows": ["M4", "C1"],
   "receipts": [],
-  "window_status": {"M4": "pending", "C1": "pending", "C2": "pending"},
+  "window_status": {"M4": "pending", "C1": "pending"},
   "tasks": {"M4": ["TASK-001"], "C1": ["TASK-002"]},
-  "verifier_assignments": {"TASK-001": "C2"},
   "source_requirements": [
     {"id": "S1", "text": "用户本轮原始需求"}
   ],
@@ -430,7 +428,7 @@ D:\gongju\{工具名}-{版本号}/
 }
 ```
 
-worker 完成后用 `receipt C1`；verifier 完成后用 `receipt C2 --role verifier`。所有本轮窗口都收到后，将 `check_requested` 设为 `true`，再运行 `taskctl.py audit-round`。脚本会检查 `window_status` 是否存在、覆盖全部窗口，并与 receipts 一致。用户中途加需求：先写入 `source_requirements` / 对应任务 `source_refs` 并补 R 项与 verify，禁止只改聊天。未映射 → `REQUIREMENT_COVERAGE_FAIL`。未确认却写 bonus/A → `GEAR_VIOLATION`。`hook_supervision=true` 但没有宿主 stop 对 → `HOOK_EVIDENCE_MISSING`。子代理冲突 → `PARALLEL_FAIL`。
+用户发送「M4 已完成，请查收」后，M1 记录 receipt；所有本轮窗口都收到后，将 `check_requested` 设为 `true`，再运行 `taskctl.py audit-round`。脚本会检查 `window_status` 是否存在、覆盖全部窗口，并与 receipts 一致。用户中途加需求：先写入 `source_requirements` / 对应任务 `source_refs` 并补 R 项与 verify，禁止只改聊天。未映射 → `REQUIREMENT_COVERAGE_FAIL`。未确认却写 bonus/A → `GEAR_VIOLATION`。`hook_supervision=true` 但没有宿主 stop 对 → `HOOK_EVIDENCE_MISSING`。子代理冲突 → `PARALLEL_FAIL`。
 
 ### 开工补充话术
 
@@ -496,4 +494,4 @@ py -3 <本技能目录>\scripts\taskctl.py migrate-project --force --root <项�
 
 覆盖前会备份到 `.task/migrate-backups/`，写 `docs/MIGRATE-REPORT.md` 与 `.task/skill-lock.json`（`skill_version` / `taskctl_version` / `migrated_at`）。未出现 `MIGRATE_READY` 前不要开发新功能。无 `--force` 时已有目标文件 → `MIGRATE_FAIL`。
 
-.gitignore 增加：`.task/hook-runs.jsonl` 
+.gitignore 增加：`.task/hook-runs.jsonl`

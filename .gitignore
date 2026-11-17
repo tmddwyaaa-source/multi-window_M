@@ -8,3 +8,7 @@ testdata/**/.task/hook-runs.jsonl
 *.egg-info/
 .DS_Store
 Thumbs.db
+.task/dsh-runs.jsonl
+.task/dsh-hook-status.json
+**/.task/dsh-runs.jsonl
+**/.task/dsh-hook-status.json

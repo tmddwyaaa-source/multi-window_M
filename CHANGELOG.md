@@ -1,15 +1,14 @@
 # multi-window_M 历史版本
 
+## 2026-11-17 — 恢复推荐基线 0.33（仓库分发整理）
+
+- 默认入口恢复本地保留的 Codex 0.33；独立提供 DSH 0.33 适配版。
+- 0.34～0.36 后续迭代退出推荐范围，历史保留供追溯，见 VERSION-POLICY.md。
+- 首页按实际 0.33 重写，补用户流程、角色、安装范围与限制。
+- 旧格式 testdata 移出默认下载，原文件保留 Git 历史。
+- 未升级 0.33 核心脚本，也未提供后续项目格式的降级转换器。
+
 当前规则以 `SKILL.md` 的 `version` 字段为准。本文件只作历史说明，**不得当作当前规则引用**。
-
-## 0.34 — 独立验收正式派工（2026-09-13）
-
-- 修复同一任务只能映射一个窗口的缺口：`round.tasks` 只表示 worker / owner，新增 `verifier_assignments` 表示独立验收窗。例如 `TASK-001` 可由 `C1` 实现、由 `C2` 验收，而 `owner` 始终是 C1。
-- `round-init` 支持 `--verifier TASK-001=C2`；已开 round 可由 M1 执行 `assign-verifier TASK-001 --window C2 --actor M1`。这不是 `reassign`，不会改 owner、attempt 或返工历史。
-- 对旧 round 的错误主路由，新增 `sync-worker-route TASK-001 --actor M1`：仅将 `round.tasks` 恢复到已有 owner，不能在验证开始后执行。
-- verifier `brief` 读取正式分配并显示验收窗与实现 owner；可选 `--window` 会校验所给窗号。verifier receipt 使用 `receipt C2 --role verifier`。
-- Full Gate / audit 新增 worker 与 verifier 路由校验：缺验收窗、验收窗等于 owner、验收报告 reviewer 不等于指派窗、或 worker 路由不等于 owner，均停止收口。
-- 新增 `test_verifier_assignments.py`，覆盖 C1 worker + C2 verifier 的完整 Gate、brief、状态、receipt、负向冲突与 round audit。
 
 ## 0.33 — 可审计返工与按需探索（2026-09-13）
 

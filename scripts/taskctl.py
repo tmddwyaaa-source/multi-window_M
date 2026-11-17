@@ -58,8 +58,6 @@ KNOWN_COMMANDS = {
     "transition",
     "reopen",
     "reassign",
-    "sync-worker-route",
-    "assign-verifier",
     "selftest",
     "brief",
     "handoff",
@@ -74,7 +72,7 @@ GENERATED_STATUS_REL = "docs/TASK-STATUS.md"
 GENERATED_STATUS_MARKER = "<!-- taskctl:generated-status; do not edit -->"
 HOOK_LOG_MAX_LINES = 100
 RERUN_TIMEOUT_SEC = 60
-SKILL_VERSION = "0.34"
+SKILL_VERSION = "0.33"
 MAX_SAME_BLOCK_FAILURES = 3
 REASSIGN_ON_SAME_BLOCK_FAILURE = 2
 LOCK_REL = ".task/skill-lock.json"
@@ -1012,16 +1010,6 @@ def validate_verification(root: Path, task_id: str, manifest: Dict[str, Any], re
         errors.append(f"{task_id}: verify-report.reviewer must be M1-M10 or Cn")
     elif worker_window and reviewer == worker_window:
         errors.append(f"{task_id}: reviewer must differ from worker window ({worker_window})")
-    try:
-        round_data = load_round(root)
-    except ValueError as exc:
-        errors.append(str(exc))
-        round_data = None
-    assigned_verifier = verifier_for_task(round_data, task_id)
-    if assigned_verifier and reviewer != assigned_verifier:
-        errors.append(
-            f"VERIFIER_ASSIGNMENT_CONFLICT: {task_id} verify-report.reviewer {reviewer} must equal assigned verifier {assigned_verifier}"
-        )
     if str(report.get("result", "")).lower() != "pass":
         errors.append(f"{task_id}: verify-report.result is not pass")
     required_ids = set(requirement_ids(manifest))
@@ -1045,7 +1033,6 @@ def gate(root: Path, task_id: str, phase: str) -> List[str]:
     if policy["conflict"]:
         return [policy["conflict"]]
     errors.extend(validate_manifest(manifest, task_id))
-    errors.extend(validate_role_assignments(root, task_id, manifest))
     errors.extend(validate_worker(root, task_id, manifest))
     if phase == "full":
         errors.extend(
@@ -1128,26 +1115,6 @@ def cmd_round_init(args: argparse.Namespace, root: Path) -> int:
             print(f"FAIL: --task must use an expected window and non-empty task id: {assignment}")
             return 1
         tasks[window].append(task_id)
-    verifier_assignments: Dict[str, str] = {}
-    for assignment in args.verifier:
-        if "=" not in assignment:
-            print(f"FAIL: invalid --verifier assignment: {assignment}; use TASK_ID=WINDOW")
-            return 1
-        task_id, window = assignment.split("=", 1)
-        task_id, window = task_id.strip(), window.strip()
-        if not task_id or window not in tasks:
-            print(f"FAIL: --verifier must use a task id and expected window: {assignment}")
-            return 1
-        if task_id in verifier_assignments:
-            print(f"FAIL: duplicate verifier assignment for {task_id}")
-            return 1
-        if task_id not in task_ids_for_round({"tasks": tasks}):
-            print(f"FAIL: --verifier task must already have a worker --task assignment: {task_id}")
-            return 1
-        if window in worker_windows_for_task({"tasks": tasks}, task_id):
-            print(f"FAIL: --verifier window must differ from the worker window for {task_id}")
-            return 1
-        verifier_assignments[task_id] = window
     write_json(
         path,
         {
@@ -1156,104 +1123,12 @@ def cmd_round_init(args: argparse.Namespace, root: Path) -> int:
             "receipts": [],
             "window_status": {window: "pending" for window in windows},
             "tasks": tasks,
-            "verifier_assignments": verifier_assignments,
             "gears": default_gears(),
             "hook_supervision": False,
             "check_requested": False,
         },
     )
     print(f"CREATED {path.relative_to(root)}")
-    return 0
-
-
-def cmd_assign_verifier(args: argparse.Namespace, root: Path) -> int:
-    try:
-        data = read_json(round_path(root))
-    except ValueError as exc:
-        print(f"RESULT FAIL\n- {exc}")
-        return 1
-    manifest, errors = load_manifest(root, args.task_id)
-    if manifest is None:
-        print("RESULT FAIL")
-        for error in errors:
-            print(f"- {error}")
-        return 1
-    policy = verification_policy(manifest)
-    if policy["conflict"]:
-        print("POLICY_CONFLICT")
-        print(f"- {policy['conflict']}")
-        return 1
-    if not policy["independent_verification"]:
-        print("RESULT FAIL")
-        print(f"- {args.task_id}: a verifier is not allowed on the short close path")
-        return 1
-    expected = {str(item) for item in data.get("expected_windows", [])}
-    if args.window not in expected or not valid_window(args.window):
-        print("RESULT FAIL")
-        print(f"- verifier {args.window} must be a valid expected M/C window")
-        return 1
-    workers = worker_windows_for_task(data, args.task_id)
-    owner = str(manifest.get("owner") or "")
-    if len(workers) != 1 or workers[0] != owner:
-        print("RESULT FAIL")
-        print(f"- WORKER_ASSIGNMENT_CONFLICT: {args.task_id} must remain routed to owner {owner}")
-        return 1
-    if args.window == owner:
-        print("RESULT FAIL")
-        print(f"- verifier {args.window} must differ from worker/owner {owner}")
-        return 1
-    if str(manifest.get("status")) in {"verifying", "verified", "integrated", "done"}:
-        print("RESULT FAIL")
-        print(f"- {args.task_id}: cannot change verifier after verification has begun")
-        return 1
-    assignments = data.setdefault("verifier_assignments", {})
-    if not isinstance(assignments, dict):
-        print("RESULT FAIL\n- verifier_assignments must be an object")
-        return 1
-    previous = str(assignments.get(args.task_id) or "")
-    assignments[args.task_id] = args.window
-    data["last_verifier_assignment_at"] = now_iso()
-    write_json(round_path(root), data)
-    change = f"{previous or '(none)'} -> {args.window}"
-    print(f"VERIFIER_ASSIGNED {args.task_id}: {change} by M1")
-    return 0
-
-
-def cmd_sync_worker_route(args: argparse.Namespace, root: Path) -> int:
-    """Repair a legacy round route so it matches the unchanged manifest.owner."""
-    try:
-        data = read_json(round_path(root))
-    except ValueError as exc:
-        print(f"RESULT FAIL\n- {exc}")
-        return 1
-    manifest, errors = load_manifest(root, args.task_id)
-    if manifest is None:
-        print("RESULT FAIL")
-        for error in errors:
-            print(f"- {error}")
-        return 1
-    if str(manifest.get("status")) in {"verifying", "verified", "integrated", "done"}:
-        print("RESULT FAIL")
-        print(f"- {args.task_id}: cannot change worker route after verification has begun")
-        return 1
-    owner = str(manifest.get("owner") or "")
-    expected = {str(item) for item in data.get("expected_windows", [])}
-    if not valid_window(owner) or owner not in expected:
-        print("RESULT FAIL")
-        print(f"- {args.task_id}: owner {owner or '(none)'} must be an expected M/C window")
-        return 1
-    raw_tasks = data.setdefault("tasks", {})
-    if not isinstance(raw_tasks, dict):
-        print("RESULT FAIL\n- round.tasks must be an object")
-        return 1
-    previous = worker_windows_for_task(data, args.task_id)
-    for window, values in list(raw_tasks.items()):
-        ids = values if isinstance(values, list) else [values]
-        raw_tasks[window] = [str(item) for item in ids if str(item) != args.task_id]
-    raw_tasks.setdefault(owner, []).append(args.task_id)
-    data["last_worker_route_sync_at"] = now_iso()
-    write_json(round_path(root), data)
-    print(f"WORKER_ROUTE_SYNCED {args.task_id}: {', '.join(previous) or '(none)'} -> {owner} by M1")
     return 0
 
 
@@ -1271,14 +1146,8 @@ def cmd_receipt(args: argparse.Namespace, root: Path) -> int:
     receipts = data.setdefault("receipts", [])
     if args.window not in receipts:
         receipts.append(args.window)
-    role = str(args.role or "worker").lower()
-    if role == "verifier":
-        verifier_tasks = verifier_tasks_for_window(data, args.window)
-        if not verifier_tasks:
-            print(f"FAIL: {args.window} has no verifier assignment in this round")
-            return 1
     data["last_receipt_at"] = now_iso()
-    data.setdefault("window_status", {})[args.window] = "verified" if role == "verifier" else "worker_done"
+    data.setdefault("window_status", {})[args.window] = "worker_done"
     data.setdefault("window_status_at", {})[args.window] = data["last_receipt_at"]
     write_json(path, data)
     print(f"RECEIPT RECORDED {args.window}")
@@ -1308,108 +1177,7 @@ def task_ids_for_round(data: Dict[str, Any]) -> List[str]:
                 result.extend(str(value) for value in values)
             elif isinstance(values, str):
                 result.append(values)
-    verifier_assignments = data.get("verifier_assignments", {})
-    if isinstance(verifier_assignments, dict):
-        result.extend(str(task_id) for task_id in verifier_assignments)
     return list(dict.fromkeys(result))
-
-
-def worker_windows_for_task(round_data: Optional[Dict[str, Any]], task_id: str) -> List[str]:
-    """Return formal implementation windows for a task from round.tasks only."""
-    if not isinstance(round_data, dict):
-        return []
-    tasks = round_data.get("tasks", {})
-    if not isinstance(tasks, dict):
-        return []
-    windows: List[str] = []
-    for window, values in tasks.items():
-        ids = values if isinstance(values, list) else [values]
-        if task_id in {str(item) for item in ids if item}:
-            windows.append(str(window))
-    return windows
-
-
-def verifier_for_task(round_data: Optional[Dict[str, Any]], task_id: str) -> str:
-    """Return the separately assigned verifier, never the implementation owner."""
-    if not isinstance(round_data, dict):
-        return ""
-    assignments = round_data.get("verifier_assignments", {})
-    if not isinstance(assignments, dict):
-        return ""
-    value = assignments.get(task_id, "")
-    return str(value).strip() if isinstance(value, str) else ""
-
-
-def verifier_tasks_for_window(round_data: Dict[str, Any], window: str) -> List[str]:
-    assignments = round_data.get("verifier_assignments", {})
-    if not isinstance(assignments, dict):
-        return []
-    return sorted(
-        str(task_id)
-        for task_id, assigned in assignments.items()
-        if str(assigned) == window
-    )
-
-
-def validate_role_assignments(
-    root: Path, task_id: str, manifest: Dict[str, Any]
-) -> List[str]:
-    """Validate v0.34's separate worker/verifier dispatch model.
-
-    Older rounds have no verifier_assignments field and remain readable.  New
-    rounds created by v0.34 always have the field, so a missing verifier then
-    becomes an explicit dispatch error instead of an ambiguous brief.
-    """
-    try:
-        round_data = load_round(root)
-    except ValueError as exc:
-        return [str(exc)]
-    if not isinstance(round_data, dict) or "verifier_assignments" not in round_data:
-        return []
-
-    errors: List[str] = []
-    expected = {str(item) for item in round_data.get("expected_windows", [])}
-    workers = worker_windows_for_task(round_data, task_id)
-    verifier = verifier_for_task(round_data, task_id)
-    relevant = bool(workers) or bool(verifier)
-    if not relevant:
-        return []
-
-    owner = str(manifest.get("owner") or "")
-    if len(workers) != 1:
-        errors.append(
-            f"WORKER_ASSIGNMENT_CONFLICT: {task_id} must have exactly one worker assignment in round.tasks"
-        )
-    elif workers[0] != owner:
-        errors.append(
-            f"WORKER_ASSIGNMENT_CONFLICT: {task_id} worker assignment {workers[0]} must equal owner {owner}"
-        )
-    elif workers[0] not in expected:
-        errors.append(
-            f"WORKER_ASSIGNMENT_CONFLICT: {task_id} worker {workers[0]} is not in expected_windows"
-        )
-
-    policy = verification_policy(manifest)
-    if policy["conflict"]:
-        return errors
-    if policy["independent_verification"]:
-        if not verifier:
-            errors.append(
-                f"VERIFIER_ASSIGNMENT_MISSING: {task_id} requires a distinct verifier_assignments entry"
-            )
-        elif not valid_window(verifier) or verifier not in expected:
-            errors.append(
-                f"VERIFIER_ASSIGNMENT_CONFLICT: {task_id} verifier {verifier or '(none)'} must be an expected M/C window"
-            )
-        elif verifier == owner or verifier in workers:
-            errors.append(
-                f"VERIFIER_ASSIGNMENT_CONFLICT: {task_id} verifier {verifier} must differ from worker/owner {owner}"
-            )
-    elif verifier:
-        errors.append(
-            f"VERIFIER_ASSIGNMENT_CONFLICT: {task_id} uses a short path and must not dispatch verifier {verifier}"
-        )
-    return errors
 
 
 def cmd_gate(args: argparse.Namespace, root: Path) -> int:
@@ -1502,7 +1270,6 @@ def cmd_audit_round(root: Path, require_hook_evidence: bool = True) -> int:
         if manifest is None:
             coverage_errors.extend(load_errors)
             continue
-        coverage_errors.extend(validate_role_assignments(root, task_id, manifest))
         coverage_errors.extend(validate_requirement_coverage(manifest, task_id))
     if coverage_errors:
         emit_close_tokens(coverage_errors)
@@ -1861,11 +1628,9 @@ def load_task_statuses(root: Path) -> Dict[str, str]:
 
 def window_task_annotation(window: str, round_data: Dict[str, Any], statuses: Dict[str, str]) -> str:
     assigned = tasks_for_window(round_data, window)
-    verifying = verifier_tasks_for_window(round_data, window)
-    if not assigned and not verifying:
+    if not assigned:
         return "tasks=-"
-    parts = [f"work:{task_id}:{statuses.get(task_id, 'MISSING')}" for task_id in assigned]
-    parts.extend(f"verify:{task_id}:{statuses.get(task_id, 'MISSING')}" for task_id in verifying)
+    parts = [f"{task_id}:{statuses.get(task_id, 'MISSING')}" for task_id in assigned]
     note = "tasks=" + ",".join(parts)
     if assigned and all(statuses.get(task_id) == "done" for task_id in assigned):
         note += " note=tasks_closed"
@@ -1956,23 +1721,17 @@ def render_status_markdown(root: Path) -> str:
     if windows:
         for window in windows:
             assigned = tasks_for_window(round_data or {}, window)
-            verifying = verifier_tasks_for_window(round_data or {}, window)
             receipt = "yes" if window in receipts else "no"
             win_state = str(window_status.get(window, "MISSING"))
-            if not assigned and not verifying:
+            if not assigned:
                 lines.append(f"| {window} | {win_state} | {receipt} | — | — | 未绑定任务 |")
                 continue
             for task_id in assigned:
                 listed_tasks.append(task_id)
                 task_state = statuses.get(task_id, "MISSING")
-                note = "worker; tasks_closed" if task_state == "done" else "worker"
+                note = "tasks_closed" if task_state == "done" else ""
                 lines.append(
                     f"| {window} | {win_state} | {receipt} | {task_id} | {task_state} | {note} |"
-                )
-            for task_id in verifying:
-                task_state = statuses.get(task_id, "MISSING")
-                lines.append(
-                    f"| {window} | {win_state} | {receipt} | {task_id} | {task_state} | verifier |"
                 )
     else:
         lines.append("| — | — | — | — | — | 无本轮窗口 |")
@@ -1988,14 +1747,9 @@ def render_status_markdown(root: Path) -> str:
         )
         for window in windows:
             assigned = tasks_for_window(round_data or {}, window)
-            verifying = verifier_tasks_for_window(round_data or {}, window)
             task_col = ", ".join(
-                f"worker:{task_id}:{statuses.get(task_id, 'MISSING')}" for task_id in assigned
-            )
-            verify_col = ", ".join(
-                f"verifier:{task_id}:{statuses.get(task_id, 'MISSING')}" for task_id in verifying
-            )
-            task_col = ", ".join(value for value in (task_col, verify_col) if value) or "—"
+                f"{task_id}:{statuses.get(task_id, 'MISSING')}" for task_id in assigned
+            ) or "—"
             lines.append(
                 f"| {window} | {'yes' if window in receipts else 'no'} | "
                 f"{window_status.get(window, 'MISSING')} | {task_col} |"
@@ -2006,13 +1760,13 @@ def render_status_markdown(root: Path) -> str:
     else:
         lines.extend(
             [
-                "| 任务 | owner | verifier | 标题 | 状态 | attempt |",
-                "|------|-------|----------|------|------|---------|",
+                "| 任务 | owner | 标题 | 状态 | attempt |",
+                "|------|-------|------|------|---------|",
             ]
         )
         for task_id, manifest in manifests.items():
             lines.append(
-                f"| {task_id} | {manifest.get('owner', '-')} | {verifier_for_task(round_data, task_id) or '—'} | "
+                f"| {task_id} | {manifest.get('owner', '-')} | "
                 f"{manifest.get('title') or '—'} | {manifest.get('status', 'pending')} | "
                 f"{manifest.get('attempt', 0)} |"
             )
@@ -2391,8 +2145,14 @@ def load_round(root: Path) -> Optional[Dict[str, Any]]:
 
 
 def window_for_task(round_data: Optional[Dict[str, Any]], task_id: str, owner: str) -> str:
-    windows = worker_windows_for_task(round_data, task_id)
-    return windows[0] if len(windows) == 1 else owner
+    if isinstance(round_data, dict):
+        tasks = round_data.get("tasks", {})
+        if isinstance(tasks, dict):
+            for window, values in tasks.items():
+                ids = values if isinstance(values, list) else [values]
+                if task_id in {str(item) for item in ids if item}:
+                    return str(window)
+    return owner
 
 
 def close_path_label(policy: Dict[str, Any]) -> str:
@@ -2486,25 +2246,7 @@ def cmd_brief(args: argparse.Namespace, root: Path) -> int:
         return 1
     policy = verification_policy(manifest)
     owner = str(manifest.get("owner") or "")
-    assignment_errors = validate_role_assignments(root, args.task_id, manifest)
-    if assignment_errors:
-        print("BRIEF_FAIL: role assignment is invalid")
-        for error in assignment_errors:
-            print(f"- {error}")
-        return 1
-    if role == "verifier":
-        if not policy["independent_verification"]:
-            print("BRIEF_FAIL: independent verification is not required for this task")
-            return 1
-        window = verifier_for_task(round_data, args.task_id)
-        if not window:
-            print("BRIEF_FAIL: verifier assignment missing; M1 must run assign-verifier first")
-            return 1
-    else:
-        window = window_for_task(round_data, args.task_id, owner)
-    if args.window and args.window != window:
-        print(f"BRIEF_FAIL: --window {args.window} does not match the assigned {role} window {window}")
-        return 1
+    window = window_for_task(round_data, args.task_id, owner)
     allowed = manifest.get("allowed_paths")
     allowed_lines = (
         [f"- {item}" for item in allowed]
@@ -2517,9 +2259,6 @@ def cmd_brief(args: argparse.Namespace, root: Path) -> int:
     print(f"- 窗号: {window or '(unassigned)'}")
     print(f"- 标题: {manifest.get('title') or '(none)'}")
     print(f"- owner: {owner or '(none)'}")
-    if role == "verifier":
-        print(f"- verifier: {window}")
-        print(f"- 实现 owner: {owner}")
     print(f"- 任务状态: {manifest.get('status', 'pending')}")
     print(f"- risk: {policy['risk']}")
     print(f"- attempt: {policy['attempt']}")
@@ -2816,16 +2555,9 @@ def build_parser() -> argparse.ArgumentParser:
         default=[],
         help="map a task to a window, e.g. --task M4=TASK-001",
     )
-    round_init.add_argument(
-        "--verifier",
-        action="append",
-        default=[],
-        help="map an independently verified task to its verifier, e.g. --verifier TASK-001=C2",
-    )
 
     receipt = sub.add_parser("receipt", help="record a window receipt")
     receipt.add_argument("window")
-    receipt.add_argument("--role", choices=["worker", "verifier"], default="worker")
 
     sub.add_parser("request-check", help="request the round audit")
 
@@ -2838,7 +2570,7 @@ def build_parser() -> argparse.ArgumentParser:
     hook = sub.add_parser("hook-audit", help="record a Stop-hook run and audit the current round")
     hook.add_argument("--source", choices=["manual", "codex-stop", "cursor-stop", "zcode-stop"], default="manual")
     hook.add_argument("--host", choices=["cursor", "codex", "zcode", "manual"])
-    migrate = sub.add_parser("migrate-project", help="backup, report, copy this v0.34 taskctl, then --check")
+    migrate = sub.add_parser("migrate-project", help="backup, report, copy this v0.33 taskctl, then --check")
     migrate.add_argument("--destination", default="scripts/taskctl.py")
     migrate.add_argument("--force", action="store_true", help="replace an existing destination after backup")
     migrate.add_argument(
@@ -2876,17 +2608,9 @@ def build_parser() -> argparse.ArgumentParser:
     reassign.add_argument("--owner", required=True, help="new M/C owner already present in round.expected_windows")
     reassign.add_argument("--reason", required=True)
     reassign.add_argument("--actor", choices=["M1"], default="M1")
-    sync_worker = sub.add_parser("sync-worker-route", help="repair a legacy worker route to the unchanged manifest owner")
-    sync_worker.add_argument("task_id")
-    sync_worker.add_argument("--actor", choices=["M1"], default="M1")
-    assign_verifier = sub.add_parser("assign-verifier", help="formally assign a distinct verifier without changing task owner")
-    assign_verifier.add_argument("task_id")
-    assign_verifier.add_argument("--window", required=True, help="distinct expected M/C verifier window")
-    assign_verifier.add_argument("--actor", choices=["M1"], default="M1")
     brief = sub.add_parser("brief", help="print a copy-ready task brief for a role")
     brief.add_argument("task_id")
     brief.add_argument("--role", required=True, help="worker, scout, or verifier")
-    brief.add_argument("--window", help="must match the formally assigned window for this role")
     sub.add_parser("handoff", help="print an M1 succession brief from .task/")
     sub.add_parser("selftest", help="run bundled tests next to this script")
     return parser
@@ -2929,10 +2653,6 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
             return cmd_reopen(args, root)
         if args.command == "reassign":
             return cmd_reassign(args, root)
-        if args.command == "sync-worker-route":
-            return cmd_sync_worker_route(args, root)
-        if args.command == "assign-verifier":
-            return cmd_assign_verifier(args, root)
         if args.command == "brief":
             return cmd_brief(args, root)
         if args.command == "handoff":

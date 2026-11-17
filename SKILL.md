@@ -1,5 +1,5 @@
 ---
-name: multi-window_M-0.34
+name: multi-window_M-0.33
 description: >-
   多窗口分工：常驻仅 M1～M10；短期任务用临时窗 C1、C2（一轮最多 4 个）。
   窗号规则见正文「窗口身份」；不要发明第三套编号。
@@ -7,32 +7,31 @@ description: >-
   --check 过基本门禁、Full Gate、Hook、负向后才继续开发。
   开局自报三套挡位；未确认禁止报加分。M1 唯一收口；查收以本窗重跑为准。
   规则只描述当前行为；门禁细节见 references/task-gate.md。
-  斥候按信息未知/冲突/过期触发；同一卡点三次：复用→换负责人→硬停；中高风险任务另派 verifier。
+  斥候按信息未知/冲突/过期触发；同一卡点三次：复用→换负责人→硬停。
   在用户提到多窗口、M1、C1、查收、模块注册表、斥候/主力/搜剿时使用。
-version: "0.34"
+version: "0.33"
 disable-model-invocation: true
 ---
 
-# Multi-Window_M-0.34（常驻 M1～M10，临时 Cn）
+# Multi-Window_M-0.33（常驻 M1～M10，临时 Cn）
 
-本文件夹名带版本号，是升级系列的隔离副本；`version` 字段也是 0.34。调用：`/multi-window_M-0.34`。历史版本说明见 [CHANGELOG.md](CHANGELOG.md)，不得当作当前规则。
+本文件夹名带版本号，是升级系列的隔离副本；`version` 字段也是 0.33。调用：`/multi-window_M-0.33`。历史版本说明见 [CHANGELOG.md](CHANGELOG.md)，不得当作当前规则。
 
 复制即用话术见 [templates.md](templates.md)。G0～G3、manifest schema、`transition` 表见 [references/task-gate.md](references/task-gate.md)。宿主 Hook 接线只允许写在 [references/hooks.md](references/hooks.md)。
 
 ## 本版问题与成功标准
 
-**问题：** 同一根因的返工曾只按总 attempt 记录，无法审计是否真的换负责人；同一任务的实现与独立验收又曾共用单值路由，导致 verifier 无法被正式派工。
+**问题：** 同一根因的返工曾只按总 attempt 记录，无法审计是否真的换负责人；斥候和 M1 回报又容易在信息已知时产生无效的长对话。
 
 **成功标准：**
 
 - 0.32 的窗号规则、状态机、门禁和 Hook 三不保持；合法窗号仍只有 `M1`～`M10` 与 `C`+数字。
 - `reopen` 以稳定的 `block_id` 记录同一根因：第 1 次原 owner 修复并复述打回项；第 2 次必须换不同的正式 M/C owner；第 3 次自动硬停并写 BLOCKERS。
 - `owner` 是当前负责人，不是新角色；`assignment_history` 不可覆盖，记录旧 owner → 新 owner、原因、block_id、失败次数。总 `attempt` 不因换人重置。
-- 实现派工与验收派工分离：`round.tasks` 只路由 worker / owner；`verifier_assignments` 将需要独立验收的任务路由到不同的正式 M/C 窗。C2 是 verifier，不接管 C1 的 owner。
 - 斥候不是默认步骤：仅在路径/影响未知、Registry 信息冲突或过期时受限只读；主力只做实现所需的最小确认，不重复大范围搜查。
 - M1 保留需求对齐、分批派工、异常处理、验收和收口；普通进展只在新决策或状态变化时汇报，不反复复述已确认背景。
 
-0.31 的迁移治理、0.30 的挡位与 hook 证据、0.29 的 `source_refs` 仍是当前规则。门禁细节、`block_id` / 交接 / verifier schema 与命令见 [references/task-gate.md](references/task-gate.md)；性能试验见 [references/performance.md](references/performance.md)。
+0.31 的迁移治理、0.30 的挡位与 hook 证据、0.29 的 `source_refs` 仍是当前规则。门禁细节、`block_id` / 交接 schema 与命令见 [references/task-gate.md](references/task-gate.md)；性能试验见 [references/performance.md](references/performance.md)。
 
 ## 核心认知（三条铁规则）
 
@@ -159,14 +158,13 @@ disable-model-invocation: true
 - Full Gate 会重跑可识别的验收命令、核 evidence 路径、有 Git 时核工作区。`manifest.json` / `rerun.json` / `verify-report.json` 不必列入工人 `changed_files`。
 - `--root` 必须放在子命令前面。常用命令与 schema 见 `references/task-gate.md`。
 - 一键自检（不依赖写死的本机路径）：`py -3 scripts/taskctl.py selftest`。
-- **派工简报：** `py -3 scripts/taskctl.py --root <项目根> brief TASK-xxx --role worker|scout|verifier [--window 窗号]`。独立验收先用 `assign-verifier TASK-xxx --window C2 --actor M1`，再生成 C2 的 verifier brief；简报会写明 C1 是实现 owner。M1 把终端输出原文贴给该窗或子代理，不要手写转述代替生成物。
+- **派工简报：** `py -3 scripts/taskctl.py --root <项目根> brief TASK-xxx --role worker|scout|verifier`。M1 把终端输出原文贴给该窗或子代理，不要手写转述代替生成物。
 - **接班简报：** `py -3 scripts/taskctl.py --root <项目根> handoff`。新 M1 先跑这一条再动手。不存在的 task 或非法 `--role` 会被拒绝。
 - **状态视图：** `py -3 scripts/taskctl.py --root <项目根> status --markdown --write`。写入 `docs/TASK-STATUS.md`。禁止手改该文件；不要在 Registry / RECEIPT-LOG 里另写一套 pending/done 当权威。
 - **同根因返工：** `reopen TASK-xxx --block-id BLOCK-... --reason "..." --actor M1`。第 2 次同 block 可同时给 `--new-owner C1`，或先触发 `REASSIGN_REQUIRED` 后用 `reassign TASK-xxx --owner C1 --reason "..." --actor M1`。负责人必须是不同、已在本轮名单中的正式 M/C 窗口；换人不重置 `attempt` / `block_id`。第 3 次同 block → `HARD_STOP` 与 `docs/BLOCKERS/`，不可继续假装重试。
 - **需求覆盖：** 用户每条新需求写入 `source_refs`（或 round 的 `source_requirements`）并映射到带 `verify`/`verify_cmd` 的 R 项。缺映射 → `REQUIREMENT_COVERAGE_FAIL`，停止收口。禁止只改聊天话术。
 - **挡位：** `round.json` 的 `gears` 记录能力挡与协作挡。未写 = 默认 + P。未确认的 bonus / A → `GEAR_VIOLATION`。
 - **Hook 证据：** `hook_supervision=true` 时，收口必须有宿主 stop 的 start/end 对。缺日志或只有 manual → `HOOK_EVIDENCE_MISSING`。无 hook 宿主不要打开 `hook_supervision`，以免卡死最低挡。
-- **独立验收派工：** 新 round 的 `verifier_assignments` 是 `TASK-xxx: Cn/Mn`；中高风险、`attempt >= 2` 或 `verification_required` 的任务必须有不同于 owner 的 verifier。缺失 / 同窗 / 路由与 owner 冲突 → `VERIFIER_ASSIGNMENT_MISSING` / `*_CONFLICT`，停止收口。旧 round 曾误把任务路由到 verifier 时，M1 可用 `sync-worker-route TASK-xxx --actor M1` 仅将 worker 路由复原为现有 owner；它不换 owner、不重置 attempt。verifier receipt 用 `receipt C2 --role verifier`。
 - **子代理绑定：** 派出的子代理写入 `subagents`（`task_id` / `window` / `allowed_paths` / `run_id`）。同文件并发、重复、工人兼 verifier、越权 → `PARALLEL_FAIL`。
 
 旧项目升级：用**已安装的本技能脚本**执行 `migrate-project --destination scripts/taskctl.py --force`（先备份再覆盖），再跑 `migrate-project --check`。未出现 `MIGRATE_READY` 前不要开发新功能。项目记录在 `.task/skill-lock.json`，报告在 `docs/MIGRATE-REPORT.md`。

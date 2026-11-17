@@ -1,0 +1,497 @@
+# Multi-Window_M 模板
+
+常驻窗：`M1`～`M10`。临时窗：`C1`、`C2`…（一轮最多 4）。窗号规则见 SKILL「窗口身份」。产出用普通文件名，文件名不是窗号。
+
+把下面 `{窗号}` 换成 `M4` 或 `C1`。
+
+## MODULE-REGISTRY.md
+
+```markdown
+# 模块注册表（Module Registry）
+
+> **主导窗口 M1** 维护路径与交付物。查收 / 打回只用窗号（M2～M10 或 C1…）。
+> 窗号见 SKILL「窗口身份」。临时 C 一轮最多 4 个，done 后关闭、号码可复用。
+> **状态禁止手写。** 运行 `py -3 scripts/taskctl.py --root <项目根> status --markdown --write`，以 `docs/TASK-STATUS.md` 为准。
+
+## 本轮派工
+- 本轮窗口：M4、C1、C2
+- 本阶段不使用：M6、M7
+- 临时窗上限：2（最多 4）
+
+## 总览
+
+状态列不要在本表手改。生成表：`docs/TASK-STATUS.md`。
+
+| 编号 | 模块名 | 产出文件 | 负责窗口 | 依赖 |
+|------|--------|----------|----------|------|
+| M1 | 主导 / 架构协调 | — | **本窗口** | — |
+| M4 | 背单词 | — | M4 | M3 |
+| C1 | 词库批次 | `data/words-batch/batch-02.json` | C1 | M1 |
+
+## C1 — 词库批次
+
+**产出文件**：`data/words-batch/batch-02.json`
+
+**路径**：只写该 json。禁止改 backend/frontend/docs。
+
+**交付物**：
+- [ ] 60～90 词，按 CONTENT-SPEC 一-B
+
+**验收**（检查已有文件，不生成文件；把 n= 换成该文件名）：
+- 见项目 `data/CONTENT-SPEC.md` 中 `python -c` 段，把文件名换成 `batch-02`
+
+**环内角色**：按需斥候 → 主力 → 搜剿；同一卡点最多 3 次（复用 → 换负责人 → 硬停）
+
+**开工话术**：`我是 C1 窗口，请读 MODULE-REGISTRY.md 中【C1】章节。信息未知才先斥候；否则直接最小确认→主力→搜剿。只改规定路径。必须贴终端输出原文。不要打开网页预览。`
+
+**状态**：见 `docs/TASK-STATUS.md`（禁止在本章手写 pending/done）
+```
+
+常驻章节标题：`## M4 — 背单词`。临时：`## C1 — 词库批次`。标题只用窗号。
+
+## 开长线硬话术
+
+```text
+本任务按循环渐进执行：
+- 每环只做一个目标，必须有成功标准、证据、存档点
+- 环内角色：信息未知才插入斥候；fail 原因明确则主力直修
+- 同一 block_id：第 1 次复用原 owner，第 2 次换不同 owner，第 3 次 fail 硬停并写卡点升级报告
+- 自测必须贴本回合终端原文；不要打开网页预览
+- 常驻只称 M2～M10，临时只称 C1、C2…；窗号见 SKILL「窗口身份」
+- 工人跑完验收不会自动交给 M1；须用户传「{窗号} 已完成，请查收」
+```
+
+## M1 开场
+
+默认：先自报三套挡位，不要说加分，直接派工。加分句不是开场模板。
+
+```text
+本窗挡位：能力=默认 协作=P 风险=按策略表。未确认不加分。hook_supervision=否。
+```
+
+### 仅加分时使用（本窗已确认额外能力，前 3 轮）
+
+```text
+本窗挡位：能力=加分（已确认）协作=A 风险=按策略表。hook_supervision=是（若本宿主已接线）。
+当前是加分状态：本窗已确认有超出默认的额外能力（作线索，不能代替本窗重跑验收命令）。
+```
+
+禁止在未确认时贴上面这句。说明书上「可能有子代理」不够。未确认却把 round.json 写成 bonus 或 A → `GEAR_VIOLATION`。
+
+### 不确定时只问（禁止先报加分）
+
+```text
+当前环境是否已能关联其他对话，或已能把子代理结果收回本会话？能则本窗为加分（须点名并写 capability_confirmed）；不能或未确认则按默认+P，不要说加分。
+```
+
+## M1 接班
+
+新 M1（或同一人换对话）先跑生成物，不要凭上一窗聊天记忆接班：
+
+```text
+py -3 scripts/taskctl.py --root <项目根> handoff
+py -3 scripts/taskctl.py --root <项目根> status --markdown --write
+```
+
+把 `handoff` 与 `docs/TASK-STATUS.md` 当接班状态源。然后再：
+
+```text
+/multi-window-m-033
+我是 M1。已阅读 handoff 生成物。按未闭环项继续；查收仍须本窗重跑；M1 唯一收口。
+先自报挡位。不要报加分（除非本窗已确认并点名）。不要手写转述代替 brief。
+```
+
+## 派工：先 brief 再贴窗
+
+M1 写好 manifest / round 后，不要手写开工长文。生成简报并**原样**贴给工人或子代理：
+
+```text
+py -3 scripts/taskctl.py --root <项目根> brief TASK-001 --role worker
+py -3 scripts/taskctl.py --root <项目根> brief TASK-001 --role scout
+py -3 scripts/taskctl.py --root <项目根> brief TASK-001 --role verifier
+```
+
+`--role` 只能是 `worker` / `scout` / `verifier`。不存在的 task 或非法 role 会被拒绝。`brief` 与 `handoff` 不改状态。
+
+工人窗仍用下面的简版话术作身份句；任务细节以 brief 生成物为准。
+
+## 子窗口简版话术
+
+**开工：**
+
+```text
+我是 {窗号} 窗口，请读 {项目路径}/docs/MODULE-REGISTRY.md 中【{窗号}】章节。
+若用户贴了 taskctl brief 生成物，以简报为准（allowed_paths、R 项、验收命令）。
+信息未知才先斥候；同一 block_id 最多 3 次（复用 → 换负责人 → 硬停）。
+只改该模块规定路径，勿覆盖其他模块文件。
+必须用终端跑 Registry 验收命令，回复里贴命令 + 终端输出原文；没有原文不许说请查收。
+不要打开网页预览。
+不要整份覆盖 manifest.json；状态只用 transition。不要把加分问句写进本窗开工词。
+```
+
+**完工汇报（对 M1）：**
+
+```text
+{窗号} 已完成，请主导窗口查收。
+```
+
+查收只用窗号。文件名可附一句「（产出 batch-02.json）」但不替代窗号。
+
+## 角色提示词（复制即用）
+
+### 斥候
+
+```text
+/multi-window-m-033
+我是 {窗号}。当前角色：斥候（只调查，禁止改任何文件）。
+请读 {项目路径}/docs/MODULE-REGISTRY.md 中【{窗号}】章节。
+主题：{一句话}
+
+硬性规则：只读本模块规定路径；禁止写代码；禁止改 Registry 为 done。
+
+必须交付：
+## 斥候报告 — {窗号}
+- 相关文件路径清单
+- 关键现状/可疑点（文件:行号 或日志）
+- 约束（依赖、接口、平台、权限）
+- 建议的最小改动范围（不要写实现代码）
+- 是否 blocked（缺什么信息）
+```
+
+### 主力
+
+```text
+/multi-window-m-033
+我是 {窗号}。当前角色：主力（只实现，最小改动）。
+请读 Registry 中【{窗号}】章节。依据斥候报告（若有则以下为准）：
+---
+{粘贴斥候报告}
+---
+
+硬性规则：
+1) 只改该模块规定路径
+2) 先给 3–7 步计划 + 成功标准，再动手
+3) 结束必须交：关键 diff 说明 + Registry 验收命令的终端输出原文
+4) 验收命令只检查已写好的文件，不要指望它替你生成交付物
+5) 不要自己把 Registry 标成 done；不要打开网页预览
+6) 修 Bug 时可叠加 /bugfix
+
+交付后说：{窗号} 已完成，请主导窗口查收。
+```
+
+### 搜剿 — 子窗口自检
+
+```text
+/multi-window-m-033
+我是 {窗号}。当前角色：搜剿（禁止修改实现代码）。
+卡点签名：{现象 + 位置/测试}
+本轮循环计数：{k}/4
+主力报告与证据：
+{粘贴}
+
+本窗未跑终端 → fail。一行 RESULT PASS 且命令本来就只打一行 → 可 pass。
+
+交付：
+## 搜剿结论 — {窗号}
+- 结果：pass / fail
+- 证据：是否含本回合命令 + stdout 原文
+- fail 打回项
+- 若计数将达 4：硬停，改输出卡点升级报告
+```
+
+### M1 最终查收
+
+```text
+/multi-window-m-033
+我是 M1。当前角色：搜剿（只验收，禁止顺手改子模块来“修完”）。
+用户汇报：{窗号} 已完成，请查收。（或：所有窗口已完成 = 只核本轮派工名单）
+
+严格执行：
+1) 范围 = 点名的 M 或 C（别名先解析成窗号），或本轮派工名单
+2) 读磁盘：产出是否在规定路径
+3) 本窗重跑该窗验收命令；一行 PASS 且复跑一致即可
+4) 对照交付物清单
+5) 内容通过 → RECEIPT-LOG；本轮名单都通过才标 done / 做合并；临时 C done 后关闭
+6) 命令失败 → fail，打回该窗（等用户再进该窗，不要假装已自动重开）
+7) 仅本窗已确认并点名加分时，关联会话 / 子代理回传可当线索；仍必须重跑命令。未确认则不要说加分。
+禁止：仅凭口头或「我看到其他对话」标 done。结论用窗号，不用文件名当窗名。
+```
+
+## 卡点升级报告（docs/BLOCKERS/）
+
+`docs/BLOCKERS/{窗号}-{短标题}.md`：
+
+```markdown
+## 卡点升级报告 — {窗号} / 环#{k}
+
+### 卡点签名
+- 现象：
+- 主要位置/测试：
+- 已循环次数：3/3
+
+### 已尝试过的改法（按时间）
+1. 改了什么 → 结果
+2. …
+3. …
+
+### 当前最可能根因
+- …
+
+### 明确排除了什么
+- …
+
+### 需要的人类/M1 决策
+- [ ] 换方案
+- [ ] 补环境/密钥/数据
+- [ ] 缩小范围 / 砍需求
+- [ ] 指定其他窗口协助（M? 或 C?）
+
+### 指定下一步（点名）
+- 交给：{窗号} 的【斥候|主力|搜剿】或 M1
+- 要检查的漏洞/检查项：
+- 在此之前：本窗口禁止继续对同一卡点盲改
+```
+
+## 完成报告（子窗口）
+
+```markdown
+## 模块完成报告 — {窗号}
+
+- 模块名称：
+- 产出文件：（如 batch-02.json，无则 —）
+- 产出路径：
+- 自测命令：
+- 终端输出原文：
+- 环内角色流：斥候 → 主力 → 搜剿
+- 与 Registry 的差异：
+- 遗留问题：
+```
+
+## RECEIPT-LOG 查收条目
+
+```markdown
+## {日期} 查收 — {窗号}
+
+| 检查项 | 结果 |
+|--------|------|
+| 产出路径 | ✅ / ❌ |
+| 本窗重跑验收 | ✅ / ❌ |
+| 终端输出（含一行 RESULT PASS 且命令本就一行） | ✅ / ❌ |
+| Registry 交付物 | ✅ / ❌ |
+
+**结论**：本窗重跑结果写在这里；**是否 done 以 `docs/TASK-STATUS.md` 与 `transition` 为准**，不要在本文件手写一套与 `.task/` 不同的 pending/done。
+**阻塞项**：…
+```
+
+标题只用窗号（M4 / C1）。
+
+## FIX-PLAN Phase 2 头部
+
+```markdown
+# 修复方案（Phase 2）
+
+> 复用 M2～M10，或开临时 C。窗号见 SKILL「窗口身份」。
+
+| 模块 | 本阶段 | 职责 |
+|------|--------|------|
+| M1 | ✅ | 查收、集成 |
+| M{n} 或 C{n} | ✅ / ❌ 不用 | … |
+```
+
+## 工具路径约定（可选）
+
+```
+D:\gongju\{工具名}-{版本号}/
+```
+
+## README 导航块
+
+```markdown
+## 多窗口分工
+
+| 文档 | 用途 |
+|------|------|
+| docs/MODULE-REGISTRY.md | 模块清单（路径/交付物；不要手写状态列） |
+| docs/TASK-STATUS.md | 由 `status --markdown --write` 生成的状态表，禁止手改 |
+| docs/RECEIPT-LOG.md | 查收叙事（结论以 TASK-STATUS / transition 为准） |
+| docs/FIX-PLAN.md | Phase 2 修复分工 |
+| docs/BLOCKERS/ | 卡点升级报告（达 3 次上限） |
+
+**作战条令**：常驻 M1～M10；临时 C 一轮最多 4。窗号见 SKILL「窗口身份」。查收以本窗重跑为准；工人不会自动交 M1。未确认额外能力不要说加分。网页预览仅 M1。可用宿主已有子代理加速，不新增角色窗。
+
+## 任务控制层模板
+
+### 任务目录
+
+```text
+.task/
+├─ round.json
+├─ TASK-001/
+│  ├─ manifest.json
+│  ├─ worker-report.json
+│  ├─ verify-report.json
+│  └─ evidence/
+└─ taskctl.py
+```
+
+### manifest.json
+
+```json
+{
+  "task_id": "TASK-001",
+  "title": "一句话任务名",
+  "owner": "M4",
+  "track": "feature",
+  "risk": "medium",
+  "attempt": 0,
+  "status": "pending",
+  "status_history": [],
+  "assignment_history": [{"from": null, "to": "M4", "reason": "initial assignment"}],
+  "block_history": [],
+  "allowed_paths": ["src/", "tests/"],
+  "source_refs": [
+    {"id": "S1", "text": "用户原始需求一句话", "maps_to": ["R1"]}
+  ],
+  "requirements": [
+    {"id": "R1", "text": "可观察的需求", "verify": "py -3 tests/test_example.py", "verify_cmd": "py -3 tests/test_example.py"}
+  ]
+}
+```
+
+### worker-report.json
+
+```json
+{
+  "task_id": "TASK-001",
+  "window": "M4",
+  "status": "worker_done",
+  "covered_requirements": ["R1"],
+  "evidence": [
+    {"requirement_id": "R1", "path": "tests/example.spec.ts", "note": "覆盖成功路径"}
+  ],
+  "changed_files": ["src/example.ts", "tests/example.spec.ts"],
+  "tests": [{"command": "py -3 tests/test_example.py", "exit_code": 0}],
+  "known_gaps": []
+}
+```
+
+`changed_files` 只列工人改的业务文件（实现、测试、`worker-report.json`、evidence）。不要列入 `manifest.json` / `rerun.json` / `verify-report.json`。不要整份重写 `manifest.json`。C1 不要改工人的 `changed_files` 来「补报」验收报告。
+
+### rerun.json（Full Gate 写入，不要手改当证据）
+
+```json
+{
+  "task_id": "TASK-001",
+  "at": "2026-09-05T16:00:00+00:00",
+  "git": "ok",
+  "diff_files": ["src/example.ts"],
+  "commands": [{"command": "py -3 tests/test_example.py", "exit_code": 0}],
+  "evidence_ok": true
+}
+```
+
+### verify-report.json
+
+```json
+{
+  "task_id": "TASK-001",
+  "reviewer": "C1",
+  "result": "pass",
+  "checked_requirements": ["R1"],
+  "missing": [],
+  "notes": "逐条对照 manifest、diff 和证据"
+}
+```
+
+当前规则：`reviewer` 必须是独立窗口，不能等于 `worker-report.window`；`changed_files` 必须全部落在 `manifest.json` 的 `allowed_paths` 内；`evidence[].path` 必须真实存在。Full Gate 会重跑 `verify_cmd` / 可执行的 `verify` / `tests[].command`，并写 `rerun.json`。**`manifest.json`、`rerun.json`、`verify-report.json` 未列入工人 `changed_files` 不算漏报。** 任务状态写在 manifest，窗口状态写在 round.json，不要混写。状态变更必须通过 `taskctl.py transition`，直接编辑 `status` 或整份覆盖 manifest 不算有效收口。策略冲突输出 `POLICY_CONFLICT`。细节见 `references/task-gate.md`。
+
+### 本轮状态 round.json
+
+```json
+{
+  "round_id": "ROUND-001",
+  "expected_windows": ["M4", "C1"],
+  "receipts": [],
+  "window_status": {"M4": "pending", "C1": "pending"},
+  "tasks": {"M4": ["TASK-001"], "C1": ["TASK-002"]},
+  "source_requirements": [
+    {"id": "S1", "text": "用户本轮原始需求"}
+  ],
+  "gears": {
+    "capability": "default",
+    "collaboration": "P",
+    "capability_confirmed": false
+  },
+  "hook_supervision": false,
+  "subagents": [],
+  "check_requested": false
+}
+```
+
+用户发送「M4 已完成，请查收」后，M1 记录 receipt；所有本轮窗口都收到后，将 `check_requested` 设为 `true`，再运行 `taskctl.py audit-round`。脚本会检查 `window_status` 是否存在、覆盖全部窗口，并与 receipts 一致。用户中途加需求：先写入 `source_requirements` / 对应任务 `source_refs` 并补 R 项与 verify，禁止只改聊天。未映射 → `REQUIREMENT_COVERAGE_FAIL`。未确认却写 bonus/A → `GEAR_VIOLATION`。`hook_supervision=true` 但没有宿主 stop 对 → `HOOK_EVIDENCE_MISSING`。子代理冲突 → `PARALLEL_FAIL`。
+
+### 开工补充话术
+
+```text
+本任务除原有 Registry 规则外，使用 .task/TASK-xxx/manifest.json 的 R 编号。
+source_refs 必须覆盖用户原始需求；不要做 brief 里没有映射的额外需求。
+只改 allowed_paths；结束时写 worker-report.json，逐条列出已覆盖的 R 编号、证据和已知遗漏。
+若开工消息含 taskctl brief 生成物，以简报为准。
+changed_files 只报你改的业务文件，不要报 manifest.json / rerun.json / verify-report.json。
+worker_done 不等于 verified，不要自行标 done 或只口头说 PASS。
+状态变更必须使用 taskctl.py transition，并填写正确 actor；不要直接编辑 manifest.status，不要整份覆盖 manifest.json。
+加分问句只给 M1 开场用，不要写进本窗开工词。
+```
+
+### 独立验证话术
+
+```text
+当前角色：独立验证，只读，禁止修改实现代码。
+读取 manifest.json、worker-report.json、当前 diff 和测试证据。
+逐条检查所有 R 编号；有任何遗漏就输出 fail，并写 verify-report.json。
+全部有证据且符合需求才输出 pass。
+```
+
+### M1 状态收口命令
+
+短路径（low 且 attempt < 2，不要求独立验收）：
+
+```text
+py -3 scripts/taskctl.py transition TASK-001 in_progress --actor M1
+py -3 scripts/taskctl.py transition TASK-001 worker_done --actor worker
+py -3 scripts/taskctl.py transition TASK-001 integrated --actor M1
+py -3 scripts/taskctl.py transition TASK-001 done --actor M1
+```
+
+独立验收路径（medium/high，或 attempt >= 2，或 verification_required）：
+
+```text
+py -3 scripts/taskctl.py transition TASK-001 verifying --actor verifier
+py -3 scripts/taskctl.py transition TASK-001 verified --actor verifier
+py -3 scripts/taskctl.py transition TASK-001 integrated --actor M1
+py -3 scripts/taskctl.py transition TASK-001 done --actor M1
+```
+
+`verified`、`integrated`、`done` 每次都会重新运行 Full Gate；任意一步失败都不得继续。medium/high 或 `attempt >= 2` 禁止 `worker_done → integrated`。若人工验收发现问题，使用 `reopen TASK-001 --block-id BLOCK-... --actor M1 --reason "..."`。第 2 次同 block 必须给不同 `--new-owner`，或先触发 `REASSIGN_REQUIRED` 再运行 `reassign`；第 3 次自动硬停。
+
+### Hook 触发证据
+
+```text
+结束一轮对话后看 .task/hook-runs.jsonl：同一 run_id 应有 phase=start 与 phase=end。
+字段含 host、source、project_root、round_id、exit_code。最多 100 行。
+该文件应在 .gitignore。手动 audit-round 不算 Hook 证据。
+```
+
+### 旧项目迁移
+
+```text
+使用已安装的本技能脚本执行。--root 必须放在子命令前面：
+py -3 <本技能目录>\scripts\taskctl.py --root <项目根目录> migrate-project --destination scripts/taskctl.py --force
+py -3 <本技能目录>\scripts\taskctl.py --root <项目根目录> migrate-project --check
+错误示例（会被拒绝）：
+py -3 <本技能目录>\scripts\taskctl.py migrate-project --force --root <项目根目录>
+```
+
+覆盖前会备份到 `.task/migrate-backups/`，写 `docs/MIGRATE-REPORT.md` 与 `.task/skill-lock.json`（`skill_version` / `taskctl_version` / `migrated_at`）。未出现 `MIGRATE_READY` 前不要开发新功能。无 `--force` 时已有目标文件 → `MIGRATE_FAIL`。
+
+.gitignore 增加：`.task/hook-runs.jsonl`

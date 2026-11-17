@@ -1,0 +1,141 @@
+# 任务门禁细节
+
+当前行为摘要在 `SKILL.md`「任务控制」。本文件是 schema、策略表、命令与 G0～G3 的唯一详细说明。历史版本见 `CHANGELOG.md`。
+
+## 两轴分离
+
+| 轴 | 存储 | 谁改 | 含义 |
+|----|------|------|------|
+| 任务状态 | `.task/TASK-xxx/manifest.json` 的 `status` | 仅 `taskctl.py transition` / `reopen` | 任务是否走完合法路径 |
+| 窗口状态 | `.task/round.json` 的 `window_status` | 派工与 receipt 流程 | 该窗是否已交查收信号 |
+
+不要写 `M2 verified` 当任务完成。应写 `TASK-001: verified`、`M2: worker_done`。`taskctl status` 可在窗口行旁标注任务终态（全部 `done` 时 `note=tasks_closed`），**不改写** `window_status`。
+
+Registry / RECEIPT-LOG 是给人看的路径与叙事，**不能代替** manifest 状态。启用 `.task/` 后，状态表只允许来自：
+
+```text
+py -3 scripts/taskctl.py --root <项目根> status --markdown --write
+```
+
+生成 `docs/TASK-STATUS.md`（文件头有 `taskctl:generated-status`）。禁止手改。手写 Registry/RECEIPT 的 pending/done 与本表冲突时，以本表和 `.task/` 为准。
+
+## 唯一策略表
+
+实现：`verification_policy()`。Gate、`audit-round`、`transition`、M1 收口必须调用它，禁止各写一套。
+
+| 条件 | 独立验收 | 唯一收口路径 |
+|------|----------|--------------|
+| **low** 且 `attempt < 2` 且未设 `verification_required` | 否 | `worker_done` → `integrated`（`--actor M1`）→ `done` |
+| **medium/high**，或 `attempt >= 2`，或 `verification_required` | 是 | `worker_done` → `verifying` → `verified` → `integrated` → `done` |
+
+`independent_verification` 与 `allow_worker_done_to_integrated` 必须互斥。无法唯一决定，或 manifest 里显式 `independent_verification` 与 `risk` / `attempt` / `verification_required` 矛盾，或 `risk` 不是 `low|medium|high` → 输出 `POLICY_CONFLICT` 并停止。
+
+角色约束：
+
+- `in_progress`：`M1`
+- `worker_done`：`worker`
+- `verifying`、`verified`：`verifier`
+- `integrated`、`done`：`M1`（短路径上 `worker_done → integrated` 也必须是 M1）
+- `reopened`：`M1`，同时递增任务总 `attempt` 并记录同根因 `block_id`
+
+`verified`、`integrated`、`done` 迁移前脚本会重新运行 Full Gate；`done` 还必须从 `integrated` 进入。人工可改为 `paused`、`blocked` 或 `reopened`，但不能无证据伪造 `verified` / `done`。
+
+## 门禁分层
+
+- **G0**：任务目录、manifest、工人报告、独立验收报告是否存在（后者仅策略要求独立验收时强制）。
+- **G1**：R 编号是否完整覆盖，是否有对应证据。
+- **G2**：测试退出码、diff 越界；只允许改 `allowed_paths`。Full Gate 会真跑命令、核 evidence 路径、有 Git 时核工作区。`manifest.json` / `rerun.json` / `verify-report.json` 未列入工人 `changed_files` 不算漏报。`src/`、`tests/`、`worker-report.json`、evidence 仍必须申报。路径只去掉 `./` 前缀，保留 `.task/`。
+- **G3**：策略要求独立验收时，必须有独立验收报告，且 `reviewer` 不得等于实现窗口。
+
+`--basic` 只跑到工人材料，不重跑命令。Hook 不标 done，也不因重跑失败去改状态。
+
+## `audit-round` 输出
+
+- `BASIC_GATE_PASS` + `VERIFY_REQUIRED`：基础材料齐全，但仍需独立验收。
+- `BASIC_GATE_PASS` + `FULL_GATE_FAIL`：有任务未通过，不能收口。
+- `BASIC_GATE_PASS` + `FULL_GATE_PASS` + `ROUND_READY_TO_CLOSE`：本轮所有任务均通过，M1 才能逐项 `done`。
+- `POLICY_CONFLICT`：策略无法唯一决定，停止收口。
+- `REQUIREMENT_COVERAGE_FAIL`：有用户需求未映射到 R 项，停止收口。
+- `GEAR_VIOLATION`：未确认却宣称 bonus / 协作挡 A，停止收口。
+- `HOOK_EVIDENCE_MISSING`：声明了 hook 监督但没有宿主 stop 的 start/end 对，停止收口。
+- `PARALLEL_FAIL`：子代理同文件并发、重复、工人兼 verifier 或越权路径，停止收口。
+- `REASSIGN_REQUIRED`：同一 `block_id` 第 2 次失败，必须先换不同的正式 M/C owner。
+- `HARD_STOP`：同一 `block_id` 第 3 次失败，已写 BLOCKERS；不得继续盲目重试。
+- `MIGRATE_FAIL`：无备份许可的覆盖、无 lock 就 `--check`、或把运行中的脚本迁到自己身上。
+- `MIGRATE_READY` / `MIGRATE_CHECK_FAIL`：`migrate-project --check` 的四项迁移健康检查。
+
+脚本负责输出 `RESULT PASS` / `RESULT FAIL` / `POLICY_CONFLICT`；agent 不得只凭口头或自行打印 PASS。
+
+## 任务目录
+
+```text
+.task/
+├─ round.json
+├─ hook-runs.jsonl          # gitignore；最多 100 行
+├─ TASK-001/
+│  ├─ manifest.json
+│  ├─ worker-report.json
+│  ├─ verify-report.json    # 仅独立验收路径
+│  ├─ rerun.json            # Full Gate 写入，不要手改当证据
+│  └─ evidence/
+└─ （项目内可选 scripts/taskctl.py 副本）
+```
+
+## manifest.json
+
+最小字段：`task_id`、`owner`、`track`、`risk`、`allowed_paths`、`source_refs`、`requirements`、`attempt`。每个 requirement 至少包含 `id`、`text`、`verify`。可跑的验收命令写在 `verify_cmd`，或把 `verify` 写成可直接执行的命令。
+
+0.33 新建任务还会写：`assignment_history`、`block_history`。它们不是新角色或第二套状态：`owner` 始终是**当前负责人**；`assignment_history` 只追加“旧 owner → 新 owner / 原因 / block_id / 次数”；`block_history` 只记录同根因失败。旧项目迁入时可缺这两项，第一次重新派负责人时脚本会补初始记录。
+
+同一卡点命令必须给稳定 `--block-id`：第 1 次原 owner 修复；第 2 次同 block 必须 `--new-owner`，或先产生 `REASSIGN_REQUIRED` 后运行 `reassign`；第 3 次同 block 自动 `HARD_STOP`。换 root cause 必须给 `--new-root-cause` 说明，不能靠改名逃避计数。`attempt` 是总重开次数，换 owner 不重置，仍用于独立验收策略。
+
+`source_refs` 每条：`id`、`text`（用户原始需求）、`maps_to`（非空 R 编号列表）。每条 R 必须被映射到。`round.json` 可选 `source_requirements`；列出的 id 必须出现在某任务的 `source_refs` 里。未映射 → `REQUIREMENT_COVERAGE_FAIL`。禁止只改聊天话术加需求。
+
+`round.json` 可选：
+
+- `gears`：`capability`=`default|bonus`，`collaboration`=`P|A`，`capability_confirmed` 布尔。未写 = 默认 + P。bonus 或 A 必须 `capability_confirmed=true`，否则 `GEAR_VIOLATION`。
+- `hook_supervision`：默认 false。为 true 时，`audit-round` 收口需要 `hook-runs.jsonl` 里来自 `cursor-stop` / `codex-stop` / `zcode-stop` 的完整 start/end 对。`--source manual` 不算。缺证据 → `HOOK_EVIDENCE_MISSING`。无 hook 宿主不要打开此开关。
+- `subagents`：每条 `run_id`、`task_id`、`window`、`role`（`worker|scout|verifier`）、`allowed_paths`。路径必须落在该任务 `allowed_paths` 内。同文件并发、重复 `run_id`、同一窗既 worker 又 verifier → `PARALLEL_FAIL`。
+
+不要整份覆盖 `manifest.json` 来改状态。不要把显式 `independent_verification` 写成与 `risk` / `attempt` / `verification_required` 相反的值。
+
+## 常用命令
+
+`--root` 必须在子命令前面。
+
+```text
+py -3 scripts/taskctl.py selftest
+py -3 scripts/taskctl.py brief TASK-001 --role worker
+py -3 scripts/taskctl.py handoff
+py -3 scripts/taskctl.py init TASK-001
+py -3 scripts/taskctl.py gate TASK-001
+py -3 scripts/taskctl.py audit-round
+py -3 scripts/taskctl.py reopen TASK-001 --block-id BLOCK-UI-001 --reason "人工验收发现遗漏" --actor M1
+py -3 scripts/taskctl.py reopen TASK-001 --block-id BLOCK-UI-001 --new-owner C1 --reason "第二次同根因失败" --actor M1
+py -3 scripts/taskctl.py reassign TASK-001 --owner C1 --reason "REASSIGN_REQUIRED 后交接" --actor M1
+py -3 scripts/taskctl.py status
+py -3 scripts/taskctl.py status --markdown
+py -3 scripts/taskctl.py status --markdown --write
+py -3 scripts/taskctl.py --root <项目根> migrate-project --destination scripts/taskctl.py --force
+py -3 scripts/taskctl.py --root <项目根> migrate-project --check
+py -3 scripts/taskctl.py transition TASK-001 in_progress --actor M1
+py -3 scripts/taskctl.py transition TASK-001 worker_done --actor worker
+py -3 scripts/taskctl.py transition TASK-001 integrated --actor M1
+py -3 scripts/taskctl.py transition TASK-001 done --actor M1
+py -3 scripts/taskctl.py transition TASK-001 verifying --actor verifier
+py -3 scripts/taskctl.py transition TASK-001 verified --actor verifier
+```
+
+`brief` / `handoff` / `status --markdown` 默认不改 `.task/` 状态。`--write` 只覆盖 `docs/TASK-STATUS.md`。无 `.task/` 时 `--markdown` → `STATUS_FAIL: no .task`。`--role` 仅 `worker|scout|verifier`。缺失 task 或非法 role → `BRIEF_FAIL`。无 `.task/` 跑 `handoff` → `HANDOFF_FAIL`。
+
+`migrate-project` 覆盖已有 `scripts/taskctl.py` 必须 `--force`，且先备份。报告与 lock 写完后再 `--check`。未 `MIGRATE_READY` 不要开发新功能。`--check` 不要求项目内所有任务 Full Gate PASS，只要求迁入的脚本能跑门禁、Hook 不改状态、负向路径仍被拒绝。
+
+前四条 `transition` 是 **low 且 attempt < 2** 的短路径（M1 查收时本窗重跑 Full Gate 后再 `integrated`）。后两条仅在策略表要求独立验收时使用；medium/high 或 `attempt >= 2` **禁止** `worker_done → integrated`。
+
+无 Git 且从子目录启动时：
+
+```text
+py -3 <本技能目录>\scripts\taskctl.py --root <项目根> status
+```
+
+`--root` 写在子命令后面会被拒绝。脚本不会盲目继承父目录的 `.task/`。
